@@ -49,6 +49,10 @@ cargo build --release
 - `session/update` のストリーミング表示、テキスト入力、Markdown 描画、
   テーマ切替、locale。
 
+## ライセンス
+
+MIT（LICENSE を参照）。上流 gpui は Apache-2.0 ですが、本 PoC のコードは MIT で公開します。
+
 ## 方針
 
 詳細は `passkey-gateway/docs/dsh-client-gpui-migration-2026-11-16.md` を参照。

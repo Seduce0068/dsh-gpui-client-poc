@@ -18,3 +18,8 @@ permissions:
 jobs:
   gates:
     uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@v1
+    with:
+      apt_packages: |
+        libxcb1-dev
+        libxkbcommon-dev
+        libxkbcommon-x11-dev
