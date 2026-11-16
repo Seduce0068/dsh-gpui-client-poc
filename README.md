@@ -22,6 +22,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `cordis_prompt_agent_ui` | Enter で agent-loop を非同期実行し、応答を GUI に表示するデモ |
 | `acp_llm_probe` | `dsh --profile acp` を実 LLM backend として cordis-rs に接続する probe |
 | `acp_multi_turn_probe` | 1つの ACP session に複数 prompt を送り、session が維持されることを確認する probe |
+| `cordis_composition_ui` | 実 DSH `cordis.yml` を読み込み、mount された fiber 一覧を GPUI に表示する |
 
 ## ビルドと実行
 
@@ -91,6 +92,12 @@ session/prompt は成功し、agent-loop まで到達しています。モデル
 2つの prompt を同じ session id に送れることを確認しました。モデル側の
 `Insufficient Balance` で応答本文は取得できませんが、prompt が同じ session
 に届くことは stop reason から検証できます。
+
+## 実 composition 統合（2026-11-17）
+
+`cordis_composition_ui` で `snapshots/sdk/text-turn/cordis.yml` を読み込み、
+6つのエントリすべてを fiber として起動して一覧を GUI に表示できます。
+cordis-rs 依存は `v0.29.0` に更新済みです。
 
 ## 未実装
 
