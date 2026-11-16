@@ -17,6 +17,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `cordis_bridge` | `cordis-rs` runtime 上で `command-compact` をマウントし、登録コマンドを表示するヘッドレス確認 |
 | `cordis_todo_ui` | `dsh-tool-todo` port をマウントし、`todos` projection を GPUI ウィンドウに描画する。ボタンから `todo_write` を呼ぶ |
 | `cordis_fs_ui` | `dsh-tool-fs` port でファイルを読み、GPUI ウィンドウに表示する（パスは第1引数） |
+| `cordis_agent_ui` | scripted LLM で agent-loop を回し、tool-fs/bash の実行結果を GPUI ウィンドウに表示する |
 
 ## ビルドと実行
 
@@ -28,6 +29,7 @@ cargo build --release
 ./target/release/cordis_bridge
 ./target/release/cordis_todo_ui   # GUI ウィンドウが開く
 ./target/release/cordis_fs_ui ./README.md
+./target/release/cordis_agent_ui   # agent-loop のステップを表示
 ```
 
 ## 確認済み（2026-11-16、Kubuntu 2026.04 / Wayland）
