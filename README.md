@@ -15,6 +15,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `acp_probe` | `initialize` と `session/new` のみを叩く接続確認 |
 | `acp_prompt_probe` | 実際にプロンプトを送り、stop reason を表示する確認 |
 | `cordis_bridge` | `cordis-rs` runtime 上で `command-compact` をマウントし、登録コマンドを表示するヘッドレス確認 |
+| `cordis_todo_ui` | `dsh-tool-todo` port をマウントし、`todos` projection を GPUI ウィンドウに描画する。ボタンから `todo_write` を呼ぶ |
 
 ## ビルドと実行
 
@@ -24,6 +25,7 @@ cargo build --release
 ./target/release/acp_probe
 ./target/release/acp_prompt_probe "1+1は？"
 ./target/release/cordis_bridge
+./target/release/cordis_todo_ui   # GUI ウィンドウが開く
 ```
 
 ## 確認済み（2026-11-16、Kubuntu 2026.04 / Wayland）
@@ -42,6 +44,11 @@ cargo build --release
 - `tokio = "=1.48.0"`, `tokio-util = "=0.7.16"`
 - `libc = "=0.2.177"`, `mio = "=1.1.0"`
 - `agent-client-protocol = "0.11.1"`
+
+## 確認済み（2026-11-17）
+
+- `cordis_todo_ui`: `cargo test --bin cordis_todo_ui` で plugin → tools seam → todos projection の経路を検証。
+- 実機では Wayland ネイティブでウィンドウが開く（Xwayland の `xwininfo` には出ないため、目視はユーザー確認が必要）。
 
 ## 未実装
 
