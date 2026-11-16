@@ -186,10 +186,17 @@ fn main() -> Result<()> {
         )));
     }
 
+    eprintln!(
+        "cordis_todo_ui: mounted `tool-todo`, tools = {:?}",
+        mounted.tools.names()
+    );
     Application::new().run(move |cx: &mut App| {
-        let _ = cx.open_window(Default::default(), |_window, cx| {
+        match cx.open_window(Default::default(), |_window, cx| {
             cx.new(|_cx| TodoPanel::new(mounted.clone()))
-        });
+        }) {
+            Ok(_window) => eprintln!("cordis_todo_ui: GPUI window created"),
+            Err(error) => eprintln!("cordis_todo_ui: failed to create window: {error}"),
+        }
     });
     Ok(())
 }
