@@ -19,6 +19,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `cordis_fs_ui` | `dsh-tool-fs` port でファイルを読み、GPUI ウィンドウに表示する（パスは第1引数） |
 | `cordis_agent_ui` | scripted LLM で agent-loop を回し、tool-fs/bash の実行結果を GPUI ウィンドウに表示する |
 | `cordis_prompt_ui` | キーボード入力でプロンプトを打ち、Enter で送信できる GPUI デモ |
+| `cordis_prompt_agent_ui` | Enter で agent-loop を非同期実行し、応答を GUI に表示するデモ |
 
 ## ビルドと実行
 
@@ -32,6 +33,7 @@ cargo build --release
 ./target/release/cordis_fs_ui ./README.md
 ./target/release/cordis_agent_ui   # agent-loop のステップを表示
 ./target/release/cordis_prompt_ui  # プロンプト入力（Enter で送信）
+./target/release/cordis_prompt_agent_ui  # 入力 → agent-loop → 応答表示
 ```
 
 ## 確認済み（2026-11-16、Kubuntu 2026.04 / Wayland）
