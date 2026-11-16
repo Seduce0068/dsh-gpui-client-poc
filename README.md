@@ -21,6 +21,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `cordis_prompt_ui` | キーボード入力でプロンプトを打ち、Enter で送信できる GPUI デモ |
 | `cordis_prompt_agent_ui` | Enter で agent-loop を非同期実行し、応答を GUI に表示するデモ |
 | `acp_llm_probe` | `dsh --profile acp` を実 LLM backend として cordis-rs に接続する probe |
+| `acp_multi_turn_probe` | 1つの ACP session に複数 prompt を送り、session が維持されることを確認する probe |
 
 ## ビルドと実行
 
@@ -83,6 +84,13 @@ echo '=== 標準エラー出力の確認（別ターミナル） ==='
 agent-loop に接続できることを確認しました。ACP の initialize / session/new /
 session/prompt は成功し、agent-loop まで到達しています。モデル側の
 `Insufficient Balance` により回答本文は取得できませんでした（接続問題ではない）。
+
+## ACP マルチターン（2026-11-17）
+
+`acp_multi_turn_probe` で `initialize` / `session/new` を1回だけ行い、
+2つの prompt を同じ session id に送れることを確認しました。モデル側の
+`Insufficient Balance` で応答本文は取得できませんが、prompt が同じ session
+に届くことは stop reason から検証できます。
 
 ## 未実装
 
