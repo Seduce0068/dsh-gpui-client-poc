@@ -31,6 +31,9 @@ struct ToggleState {
     ctx: Context,
     registry: PluginRegistry,
     composition: Composition,
+    /// Persisted enable/disable choices, saved on every toggle.
+    saved: cordis_rs::loader::CompositionState,
+    state_path: std::path::PathBuf,
 }
 
 struct Panel {
@@ -99,6 +102,20 @@ impl Panel {
         };
         if let Some(message) = error_message {
             self.lines.push(SharedString::from(message));
+        }
+
+        // Persist the new enable/disable state after a successful toggle.
+        {
+            let mut state = self.state.lock().expect("toggle state poisoned");
+            let choice = state
+                .entries
+                .get(index)
+                .map(|slot| (slot.id.clone(), slot.fiber.is_some()));
+            if let Some((id, enabled)) = choice {
+                state.saved.set(id, enabled);
+            }
+            let path = state.state_path.clone();
+            let _ = state.saved.save(&path);
         }
         self.refresh();
     }
@@ -231,12 +248,24 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let registry = build_registry(&ctx);
 
     let report = composition.mount_available(&ctx, &registry).await?;
+
+    // Restore previously saved enable/disable choices.
+    let state_path = std::path::PathBuf::from("/tmp/cordis-entries-toggle.json");
+    let saved = cordis_rs::loader::CompositionState::load(&state_path);
+
     let mut entries = Vec::new();
     for fiber in report.mounted {
-        entries.push(EntrySlot {
-            id: fiber.name().to_string(),
-            fiber: Some(fiber),
-        });
+        let id = fiber.name().to_string();
+        // YAML default is enabled; an explicit saved `false` disables it.
+        if !saved.is_enabled(&id, true) {
+            let _ = fiber.unload().await;
+            entries.push(EntrySlot { id, fiber: None });
+        } else {
+            entries.push(EntrySlot {
+                id,
+                fiber: Some(fiber),
+            });
+        }
     }
     for (id, _) in report.skipped_unknown {
         entries.push(EntrySlot { id, fiber: None });
@@ -246,6 +275,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         ctx: ctx.clone(),
         registry,
         composition,
+        saved,
+        state_path,
     }));
 
     Application::new().run(move |cx: &mut App| {
