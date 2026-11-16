@@ -24,6 +24,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `acp_multi_turn_probe` | 1つの ACP session に複数 prompt を送り、session が維持されることを確認する probe |
 | `cordis_composition_ui` | 実 DSH `cordis.yml` を読み込み、mount された fiber 一覧を GPUI に表示する |
 | `cordis_composition_toggle_ui` | クリックでプラグイン fiber を unload / 再 mount するデモ |
+| `cordis_entries_toggle_ui` | 実 composition の全エントリを個別に unload / 再 mount するデモ |
 
 ## ビルドと実行
 
