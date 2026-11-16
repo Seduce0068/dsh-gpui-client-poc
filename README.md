@@ -20,6 +20,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `cordis_agent_ui` | scripted LLM で agent-loop を回し、tool-fs/bash の実行結果を GPUI ウィンドウに表示する |
 | `cordis_prompt_ui` | キーボード入力でプロンプトを打ち、Enter で送信できる GPUI デモ |
 | `cordis_prompt_agent_ui` | Enter で agent-loop を非同期実行し、応答を GUI に表示するデモ |
+| `acp_llm_probe` | `dsh --profile acp` を実 LLM backend として cordis-rs に接続する probe |
 
 ## ビルドと実行
 
@@ -75,6 +76,13 @@ echo '=== 標準エラー出力の確認（別ターミナル） ==='
 ウィンドウが見えたら `+ prepare step` / `start` / `finish` / `clear` を
 押してください。押すと `todo_write` が cordis-rs の `tools` seam 経由で
 呼ばれ、リストとステータス行数が更新されます。
+
+## ACP バックエンド接続（2026-11-17）
+
+`acp_llm_probe` で `dsh --profile acp` を `from_async_text` provider 経由で
+agent-loop に接続できることを確認しました。ACP の initialize / session/new /
+session/prompt は成功し、agent-loop まで到達しています。モデル側の
+`Insufficient Balance` により回答本文は取得できませんでした（接続問題ではない）。
 
 ## 未実装
 
