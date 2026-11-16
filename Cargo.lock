@@ -1033,7 +1033,7 @@ dependencies = [
 [[package]]
 name = "cordis-rs"
 version = "0.1.0"
-source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.5.0#a43569347d631ebb4d6bcbd630998b596456d26a"
+source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.10.0#c986f5bb8fadcfc2c624bddbdddd2ddaf871f4b3"
 dependencies = [
  "async-trait",
  "futures",
@@ -1511,6 +1511,7 @@ dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-tokio",
  "cordis-rs",
+ "futures",
  "gpui",
  "serde_json",
  "tokio",
