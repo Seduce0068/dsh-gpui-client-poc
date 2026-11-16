@@ -50,6 +50,24 @@ cargo build --release
 - `cordis_todo_ui`: `cargo test --bin cordis_todo_ui` で plugin → tools seam → todos projection の経路を検証。
 - 実機では Wayland ネイティブでウィンドウが開く（Xwayland の `xwininfo` には出ないため、目視はユーザー確認が必要）。
 
+### GUI の目視確認（Kubuntu / Wayland）
+
+エージェント環境には `kdotool` が無く、Wayland ネイティブのウィンドウを
+自動列挙できません。次の手順で確認してください。
+
+```bash
+echo '=== cordis_todo_ui を起動 ==='
+cd /home/koppe/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc
+./target/debug/cordis_todo_ui
+
+echo '=== 標準エラー出力の確認（別ターミナル） ==='
+# "cordis_todo_ui: GPUI window created" が出ていればウィンドウ作成成功
+```
+
+ウィンドウが見えたら `+ prepare step` / `start` / `finish` / `clear` を
+押してください。押すと `todo_write` が cordis-rs の `tools` seam 経由で
+呼ばれ、リストとステータス行数が更新されます。
+
 ## 未実装
 
 - GPUI の `Render` と ACP の Tokio セッションの統合。
