@@ -176,7 +176,7 @@ fn main() -> Result<()> {
         .map_err(|error| Error::Other(format!("failed to build runtime: {error}")))?;
     let mounted = runtime.block_on(async {
         let ctx = Context::root("gpui-todo-ui");
-        cordis_rs::plugin_ports::mount(&ctx, false).await
+        cordis_rs::plugin_ports::mount_tool_todo(&ctx, false).await
     })?;
 
     if mounted.tools.names() != ["todo_write"] {
@@ -208,7 +208,9 @@ mod tests {
     #[tokio::test]
     async fn mounted_port_drives_todos_through_the_tools_seam() {
         let ctx = Context::root("gpui-todo-test");
-        let mounted = cordis_rs::plugin_ports::mount(&ctx, false).await.unwrap();
+        let mounted = cordis_rs::plugin_ports::mount_tool_todo(&ctx, false)
+            .await
+            .unwrap();
         assert_eq!(mounted.tools.names(), ["todo_write"]);
         assert!(mounted.projections.is_registered("todos"));
 
