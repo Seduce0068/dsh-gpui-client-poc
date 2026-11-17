@@ -114,7 +114,9 @@ cordis-rs 依存は `v0.29.0` に更新済みです。
 
 ## ライセンス
 
-MIT（LICENSE を参照）。上流 gpui は Apache-2.0 ですが、本 PoC のコードは MIT で公開します。
+`AGPL-3.0-or-later`（[LICENSE](LICENSE) を参照）。上流 gpui は Apache-2.0 ですが、
+本 PoC のコードは `AGPL-3.0-or-later` で公開します。以前の MIT 本文は
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に保持しています。
 
 ## 方針
 
