@@ -1018,7 +1018,7 @@ dependencies = [
 [[package]]
 name = "cordis-rs"
 version = "0.1.0"
-source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.72.0#f58b1da7a147af96118d63e3d32c17c9e8041bcb"
+source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.74.0#53599b25c57adfa7f9009453412d709b2dc19aa2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
