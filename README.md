@@ -25,6 +25,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `acp_stream_probe` | ACP の `session/update` をリッスンして AgentMessageChunk を表示する probe |
 | `acp_stream_ui` | ACP の chunk を共有バッファ経由で GPUI ウィンドウにリアルタイム描画するデモ |
 | `cordis_permission_ui` | permission preset をクリック切替し、approval gate 付き tool の allow/deny を表示するデモ |
+| `cordis_retry_ui` | 構造化 LLM エラー（HTTP 429）を agent-loop の retry で回復させた結果を表示するデモ |
 | `cordis_composition_ui` | 実 DSH `cordis.yml` を読み込み、mount された fiber 一覧を GPUI に表示する |
 | `cordis_composition_toggle_ui` | クリックでプラグイン fiber を unload / 再 mount するデモ |
 | `cordis_entries_toggle_ui` | 実 composition の全エントリを個別に unload / 再 mount し、状態を `/tmp/cordis-entries-toggle.json` に永続化するデモ |
