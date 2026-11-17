@@ -121,3 +121,13 @@ MIT（LICENSE を参照）。上流 gpui は Apache-2.0 ですが、本 PoC の�
 詳細はローカルの `passkey-gateway/docs/dsh-client-gpui-migration-2026-11-16.md` を参照（非公開資料のため GitHub には含まない）。
 ユーザーにより案C（既存 Web 併存 + ACP 経由の GPUI ネイティブクライアント）
 が選択済み。
+
+## ローカル検証
+
+```bash
+cargo build --bins
+bash scripts/smoke-gui.sh   # 各 GPUI デモがウィンドウを作ることを確認（ディスプレイ必要）
+```
+
+`acp_*` probe は外部の `dsh --profile acp` とモデル残高に依存するため、
+このスクリプトには含めていません。
