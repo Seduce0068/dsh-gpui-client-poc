@@ -13,3 +13,16 @@ gpui = "=0.2.2"
 serde_json = "1"
 tokio = { version = "=1.48.0", features = ["full"] }
 tokio-util = { version = "=0.7.16", features = ["compat"] }
+
+[profile.dev]
+# GPUI + wgpu の debuginfo は巨大（実測で dev バイナリ 500MiB 超、target/ が 60GiB に膨張）。
+# バックトレースは読めるよう行テーブルのみに抑制する。
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# 依存クレートの debuginfo は不要。キャッシュが容量とリンク時間を支配する。
+debug = false
+
+[profile.release]
+# 配布バイナリからシンボルを除去する。
+strip = true
