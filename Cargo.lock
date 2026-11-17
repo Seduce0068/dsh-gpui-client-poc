@@ -71,21 +71,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-client-protocol-tokio"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e1572b219f22c4b3be0f20f934c8b6f1d1457126ce72923c4f6608f96153b65"
-dependencies = [
- "agent-client-protocol",
- "futures",
- "serde",
- "serde_json",
- "shell-words",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1033,10 +1018,11 @@ dependencies = [
 [[package]]
 name = "cordis-rs"
 version = "0.1.0"
-source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.57.0#16d2464678d5009adba997e540f020c64494d047"
+source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.59.0#bbbb3647b6046e1416e7eb1aed25d4ddd4d94aae"
 dependencies = [
  "async-trait",
  "futures",
+ "regex",
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
@@ -1509,7 +1495,6 @@ name = "dsh-gpui-client-poc"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
- "agent-client-protocol-tokio",
  "cordis-rs",
  "futures",
  "gpui",
@@ -5077,12 +5062,6 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
-
-[[package]]
-name = "shell-words"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shlex"
