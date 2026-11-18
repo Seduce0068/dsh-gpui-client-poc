@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T14:46:56+09:00"
+  at: "2026-11-18T15:00:30+09:00"
 ---
 
 ## 進行中
@@ -26,10 +26,12 @@ verified:
 - [x] `verify-smoke-false-positive` / `verify-window-not-observed` — smoke を spectacle +
   read_image の実描画証跡へ置換。README に obsolete 告知とクロップ/マスキング方針を記載。
 - [ ] `acp-handlers-absent` — ACP `Client.builder()` に `RequestPermissionRequest` / `ReadTextFileRequest` / `terminal/*` の `on_receive_request` handler を登録し、`method_not_found` を解消する（根拠: `agent-client-protocol-0.11.1/src/role/acp.rs:24-25` / G2）。
-- [ ] `cordis-approval-always-allow` / `agent-ui-pipeline-no-gate` — answerer を常 Allow から変更可能にし、承認 request へ tool 引数を渡す。さらに `cordis_agent_ui` で破棄している `with_approval()` pipeline を接続する（根拠: `cordis_permission_ui.rs:48-49`, `tools.rs:311-315`, `cordis_agent_ui.rs:110-127` / G2）。
+- [x] `cordis-approval-always-allow` — DSH_GPUI_APPROVAL_ANSWER で
+  allow/deny/ask を切替、ツール引数を trace に記録して UI 表示（+3テスト）。
 - [x] `state-tmp-fixed-paths` / `state-multi-instance-clobber` — XDG state +
   pid サブディレクトリへ移行、無条件削除を廃止、保存エラーを可視化（2026-11-18）。
-- [ ] `stream-update-variants-dropped` — `SessionUpdate` の10バリアントと `ContentBlock` の4バリアントを処理し、ToolCall / Plan / Thought / 非 Text を描画または明示的に無視理由をログする（根拠: crate `client.rs:84`, `content.rs:36` / G1）。
+- [x] `stream-update-variants-dropped` — thought / tool_call / tool_call_update /
+  config_option_update を描画。usage_update は feature 無効のため無視理由を表示（+8テスト）。
 - [x] `llm-probe-returns-stop-reason` — ACP セッション API
   の本文読取りへ置換し、`Channel::duplex()` で stop_reason 非混入を検証（2026-11-18）。
 - [ ] `prompt-ui-replies-never-filled` — `cordis_prompt_ui` に AgentLoop を接続するか、`cordis_prompt_agent_ui` へ統合して README:21 の説明と実態を一致させる（根拠: `cordis_prompt_ui.rs:41,63-69,128-139` / G7）。
@@ -50,10 +52,12 @@ verified:
 ### DSH 調査 ラウンド4-5 による訂正（2026-11-17、既存行は削除せず参考として残す）
 
 - [ ] `acp-handlers-absent (DSH r4 訂正)` — 上の `acp-handlers-absent` を次の通り絞る: `session/request_permission` のみ登録（**severity: high → medium**）。DSH は owned session + `callId` + 承認ポリシー `'ask'` の条件付き送信で、`'never'` では即 `'rejected'`（`dsh-acp/src/index.ts:158-176`）。**`fs/*` と `terminal/*` は DSH ブリッジが発行しないため handler 登録対象外**（round-2 A-04 で refuted、round-4 C1）。汎用 ACP Agent 接続は別タスク（根拠: `investigation/round-4.md` A, `final.md` 妥当性吸収表）。
-- [ ] `stream-update-variants-dropped (DSH r4 訂正)` — 上の記述（10バリアント/Plan 描画）を置き換える: DSH が実送信する **6種**（`agent_thought_chunk` / `agent_message_chunk` / `tool_call` / `tool_call_update` / `usage_update` / `config_option_update`）のうち未描画の **5種** を対象にする。**Plan / AvailableCommands / CurrentMode / SessionInfo は DSH 側 unsupported 明記のため対応不要**（round-2 A-02、round-4 C2、severity medium 検討）。
+- [x] `stream-update-variants-dropped` — thought / tool_call / tool_call_update /
+  config_option_update を描画。usage_update は feature 無効のため無視理由を表示（+8テスト）。
 - [ ] `agent-ui-pipeline-no-gate (DSH r4 真因訂正)` — 真因は `cordis_agent_ui.rs:110` の `let (tools, _)` ではなく **`AgentLoop::run` が `self.tools.invoke()` を直接呼び `ToolPipeline::run` を通らない設計**（cordis-rs `agent_loop.rs:234`）。修正は AgentLoop へ pipeline を注入する API 追加 + host 側 `with_approval`。「stderr 未捕捉で外部送信」は refuted（`shell.rs:136` で piped、UI 表示）。現状 scripted provider で発火しない（根拠: `investigation/round-4.md` B）。
 - [ ] `cordis-approval-guard-reentrancy (DSH r5 新規)` — `ApprovalService::request()` が read guard 保持中に answerer を同期呼び出し（cordis-rs `approval.rs:131-149`、v0.67.0 も同一）。r4 で提案した「mpsc + UI 回答」回避策は UI が `add_answerer`/`set_policy`（write）を呼ぶと RwLock 再入デッドロック。**callback 前に guard を drop する最小修正**が先（根拠: `investigation/round-5.md` E-3）。
-- [ ] `deps-vulnerability-triage (DSH r4 新規)` — `cargo audit` 26件のうち11件は非到達（quinn-proto×8, quinn-udp, quick-xml 0.30.0×2; `cargo tree -i` で `nothing to print`）。**到達15件を優先、最優先は rmcp `RUSTSEC-2026-0462`（6.5, agent-client-protocol 直下）**。tokio `RUSTSEC-2026-0386` は `AsyncFd` 未使用のため現状発現せず（warning 扱いで CI 赤にならない）、将来 AsyncFd 導入時に修正必須（根拠: `investigation/round-4.md` C）。
+- [x] `deps-vulnerability-triage` — 到達15/非到達11を特定し、最優先 rmcp
+  RUSTSEC-2026-0462 の方針を investigation/dependency-triage.md に記録。
 - [x] `fs-read-errors-abort-before-window` — FilePanel::from_result に集約し、
   4種の読取失敗でもウィンドウを開き render で理由を表示（+5テスト）。
 - [x] `state-json-corruption-and-silent-save-failure` — 破損 JSON の警告と保存失敗の
