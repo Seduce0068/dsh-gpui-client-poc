@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T17:06:11+09:00"
+  at: "2026-11-18T17:21:34+09:00"
 ---
 
 ## 進行中
@@ -25,7 +25,9 @@ verified:
 
 - [x] `verify-smoke-false-positive` / `verify-window-not-observed` — smoke を spectacle +
   read_image の実描画証跡へ置換。README に obsolete 告知とクロップ/マスキング方針を記載。
-- [ ] `acp-handlers-absent` — ACP `Client.builder()` に `RequestPermissionRequest` / `ReadTextFileRequest` / `terminal/*` の `on_receive_request` handler を登録し、`method_not_found` を解消する（根拠: `agent-client-protocol-0.11.1/src/role/acp.rs:24-25` / G2）。
+- [x] `acp-handlers-absent` (DSH r4 訂正) — acp_probe の Client に
+  session/request_permission handler を登録し Cancelled 応答を検証（+1テスト）。
+  他 probe への展開は acp-permission-other-probes として分離。
 - [x] `cordis-approval-always-allow` — DSH_GPUI_APPROVAL_ANSWER で
   allow/deny/ask を切替、ツール引数を trace に記録して UI 表示（+3テスト）。
 - [x] `state-tmp-fixed-paths` / `state-multi-instance-clobber` — XDG state +
@@ -46,7 +48,8 @@ verified:
 - [x] `tests-6-of-19` / `tests-no-mock-provider` — 18/19 バイナリにオフライン
   テストを追加。実 dsh サブプロセス経路は残高回復後の手動確認として残る。
   → 2026-11-18: acp_prompt_probe / acp_stream_probe にも duplex テストを追加（進捗）。
-- [ ] `ci-gates-missing` — 共通 workflow `rust-gates.yml@v1` に `-D clippy::undocumented_unsafe_blocks` と `audit: true` を追加（提供側を先に検討）。現状は clippy `-D warnings` のみで cargo audit は未実行（根拠: raw.githubusercontent.com の v1 定義 / G3）。
+- [x] `ci-gates-missing` — 共通 workflow に audit: true と undocumented_unsafe_blocks
+  を追加（提供側変更不要、YAML 検証済み）。
 
 - [x] `state-stable-id` — 安定 ID（`user-USER`）ディレクトリを併用し、
   pid 変更後も state を読めるようにした（pid scratch は分離維持）。
@@ -55,7 +58,9 @@ verified:
 
 ### DSH 調査 ラウンド4-5 による訂正（2026-11-17、既存行は削除せず参考として残す）
 
-- [ ] `acp-handlers-absent (DSH r4 訂正)` — 上の `acp-handlers-absent` を次の通り絞る: `session/request_permission` のみ登録（**severity: high → medium**）。DSH は owned session + `callId` + 承認ポリシー `'ask'` の条件付き送信で、`'never'` では即 `'rejected'`（`dsh-acp/src/index.ts:158-176`）。**`fs/*` と `terminal/*` は DSH ブリッジが発行しないため handler 登録対象外**（round-2 A-04 で refuted、round-4 C1）。汎用 ACP Agent 接続は別タスク（根拠: `investigation/round-4.md` A, `final.md` 妥当性吸収表）。
+- [x] `acp-handlers-absent` (DSH r4 訂正) — acp_probe の Client に
+  session/request_permission handler を登録し Cancelled 応答を検証（+1テスト）。
+  他 probe への展開は acp-permission-other-probes として分離。
 - [x] `stream-update-variants-dropped` — thought / tool_call / tool_call_update /
   config_option_update を描画。usage_update は feature 無効のため無視理由を表示（+8テスト）。
 - [ ] `agent-ui-pipeline-no-gate (DSH r4 真因訂正)` — 真因は `cordis_agent_ui.rs:110` の `let (tools, _)` ではなく **`AgentLoop::run` が `self.tools.invoke()` を直接呼び `ToolPipeline::run` を通らない設計**（cordis-rs `agent_loop.rs:234`）。修正は AgentLoop へ pipeline を注入する API 追加 + host 側 `with_approval`。「stderr 未捕捉で外部送信」は refuted（`shell.rs:136` で piped、UI 表示）。現状 scripted provider で発火しない（根拠: `investigation/round-4.md` B）。
@@ -120,7 +125,8 @@ verified:
 - [x] `gitignore-review-artifacts` は却下 — cross-review/ と investigation/ は
   todo が参照する成果物として追跡済みで、無視対象にすると参照が壊れる。
 - [x] `correct-prior-pool` — fixture 6件・テスト分母 18bin+main=19 へ訂正。
-- [ ] `external-research-retry` — ACP の crates.io 最新版と RUSTSEC / GitHub Advisory を、利用可能な別経路で再調査（G3）。**→ DSH r5 訂正: `investigation/round-3.md` C-17 で ACP 最新 5.3.0（2026-11-14）、C-8 で gpui/ACP/cordis の advisory 空を確認済み、B-1 で `cargo audit` 実測済み（EXIT=1/26件）。cross-review `final.md:158-159` の「cargo audit 未実行」は誤記。再調査は「ACP 5.x と DSH の互換性」と「tokio 最新版（round-5 で取得失敗）」に限定すること。**
+- [x] `external-research-retry` — tokio 1.54.1 / ACP 5.3.0 を一次情報で確認。
+  DSH 側の実プロトコルは未確認として記録（investigation/external-research-retry.md）。
 
 - [x] `stream-prompt-input` — CLI 引数 > 環境変数 > 既定の順で解決し、
   空入力はデフォルトへフォールバック（+5テスト）。

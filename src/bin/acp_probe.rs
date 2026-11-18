@@ -12,6 +12,7 @@
 
 use agent_client_protocol::schema::{
     InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
 use std::cell::RefCell;
@@ -233,6 +234,31 @@ async fn initialize_and_open_session(
     Client
         .builder()
         .name("dsh-gpui-probe")
+        // DSH only emits `session/request_permission` (agent -> client) for
+        // owned sessions whose policy is `ask`. Registering the handler on the
+        // Client builder prevents that request from being answered with
+        // JSON-RPC `method_not_found`. This probe has no UI and sends no
+        // prompts, so there is nobody to ask: answer `Cancelled`, never an
+        // implicit approval. `fs/*` and `terminal/*` are intentionally NOT
+        // registered (DSH's bridge never emits them).
+        //
+        // Feasibility note: in agent-client-protocol 0.11.1
+        // `Builder::on_receive_request` is generic over `Host` and only needs
+        // `Host::Counterpart: HasPeer<Host::Counterpart>`. Here `Host =
+        // Client`, so the bound is `Agent: HasPeer<Agent>`, which is implemented
+        // in `role/acp.rs`. `RequestPermissionRequest` implements
+        // `JsonRpcRequest` with response `RequestPermissionResponse`
+        // (`schema/agent_to_client/requests.rs`) and belongs to the
+        // `AgentRequest` enum (client-side inbound requests). Therefore the
+        // handler can be registered here; no API workaround is needed.
+        .on_receive_request(
+            async move |_request: RequestPermissionRequest, responder, _cx| {
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
             let init = connection
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
@@ -284,9 +310,11 @@ mod tests {
 
     use agent_client_protocol::schema::{
         Implementation, InitializeRequest, InitializeResponse, NewSessionRequest,
-        NewSessionResponse, PromptRequest, PromptResponse, ProtocolVersion, SessionId, StopReason,
+        NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
+        ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
+        RequestPermissionResponse, SessionId, StopReason, ToolCallUpdate, ToolCallUpdateFields,
     };
-    use agent_client_protocol::{Agent, Channel};
+    use agent_client_protocol::{Agent, Channel, Client, ConnectionTo};
 
     use super::{
         ProbeStream, ShutdownOutcome, initialize_and_open_session, report_handshake,
@@ -336,6 +364,9 @@ mod tests {
         protocol_version: Mutex<Option<ProtocolVersion>>,
         cwd: Mutex<Option<PathBuf>>,
         prompt_count: AtomicUsize,
+        /// Agent-side view of the `session/request_permission` reply. `None`
+        /// means the request never reached the client handler.
+        permission: Mutex<Option<Result<RequestPermissionResponse, String>>>,
     }
 
     /// Serve a fake ACP agent on one end of an in-process duplex channel.
@@ -343,10 +374,14 @@ mod tests {
     /// It records what the client sent and replies with a fixed session id.
     /// No subprocess, model provider, or balance is involved. A prompt
     /// handler is registered only to detect (and fail) an unexpected prompt.
-    fn spawn_fake_agent(observed: Arc<Observed>) -> agent_client_protocol::Channel {
+    fn spawn_fake_agent(
+        observed: Arc<Observed>,
+        request_permission: bool,
+    ) -> agent_client_protocol::Channel {
         let (client_channel, agent_channel) = Channel::duplex();
         let observed_init = Arc::clone(&observed);
         let observed_new = Arc::clone(&observed);
+        let observed_permission = Arc::clone(&observed);
         tokio::spawn(async move {
             let builder = Agent
                 .builder()
@@ -376,7 +411,36 @@ mod tests {
                     },
                     agent_client_protocol::on_receive_request!(),
                 );
-            let _ = builder.connect_to(agent_channel).await;
+            if request_permission {
+                // Send an agent -> client `session/request_permission` as soon
+                // as the connection is up. A client without the handler would
+                // answer `method_not_found`; with the handler it gets a
+                // `Cancelled` response. The request is issued from main_fn
+                // (not from a request handler), so awaiting the reply cannot
+                // deadlock the single-task event loop.
+                let _ = builder
+                    .connect_with(agent_channel, |cx: ConnectionTo<Client>| async move {
+                        let request = RequestPermissionRequest::new(
+                            SessionId::from(SESSION_ID),
+                            ToolCallUpdate::new("call-1", ToolCallUpdateFields::new()),
+                            vec![PermissionOption::new(
+                                "allow-once",
+                                "Allow once",
+                                PermissionOptionKind::AllowOnce,
+                            )],
+                        );
+                        let result = cx
+                            .send_request(request)
+                            .block_task()
+                            .await
+                            .map_err(|error| error.to_string());
+                        *observed_permission.permission.lock().unwrap() = Some(result);
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+                    .await;
+            } else {
+                let _ = builder.connect_to(agent_channel).await;
+            }
         });
         client_channel
     }
@@ -384,7 +448,7 @@ mod tests {
     #[tokio::test]
     async fn initialize_and_new_session_work_over_duplex_channel() {
         let observed = Arc::new(Observed::default());
-        let client_channel = spawn_fake_agent(Arc::clone(&observed));
+        let client_channel = spawn_fake_agent(Arc::clone(&observed), false);
         let cwd = PathBuf::from("/tmp/offline-acp-probe");
 
         let (init, session) = initialize_and_open_session(cwd.clone(), client_channel)
@@ -408,6 +472,43 @@ mod tests {
 
         // This probe must stay free of model calls.
         assert_eq!(observed.prompt_count.load(Ordering::SeqCst), 0);
+    }
+
+    /// Offline regression for the DSH r4 `method_not_found` fix.
+    ///
+    /// The fake agent sends an agent -> client `session/request_permission`
+    /// request. Without a handler on the `Client` builder the agent would get
+    /// a JSON-RPC `method_not_found` error; with the handler it must receive a
+    /// `Cancelled` response (this probe has no UI to ask a real user). No
+    /// subprocess, model provider, or credentials are involved.
+    #[tokio::test]
+    async fn client_answers_request_permission_without_method_not_found() {
+        let observed = Arc::new(Observed::default());
+        let client_channel = spawn_fake_agent(Arc::clone(&observed), true);
+        let cwd = PathBuf::from("/tmp/offline-acp-probe");
+
+        let (init, session) = initialize_and_open_session(cwd, client_channel)
+            .await
+            .expect("offline handshake should succeed");
+        assert_eq!(init.protocol_version, ProtocolVersion::V1);
+        assert_eq!(session.session_id, SessionId::from(SESSION_ID));
+
+        // The client handler runs on the connection's background task, so the
+        // agent's observation may land slightly after the handshake returns.
+        for _ in 0..100 {
+            if observed.permission.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let result = observed
+            .permission
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("agent must observe a reply to session/request_permission");
+        let response = result.expect("permission request must not fail with method_not_found");
+        assert_eq!(response.outcome, RequestPermissionOutcome::Cancelled);
     }
 
     /// Returning from `connect_with` drops the ACP transport and with it our
