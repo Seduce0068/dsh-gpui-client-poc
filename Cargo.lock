@@ -1018,12 +1018,13 @@ dependencies = [
 [[package]]
 name = "cordis-rs"
 version = "0.1.0"
-source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.133.0#b9d1782e27cdc6f94ed2e50b41e32442cfc89eec"
+source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.134.0#8030088fefd7608d593f93df26fc506ff4c8ef02"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
  "regex",
+ "serde",
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
