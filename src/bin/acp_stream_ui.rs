@@ -8,7 +8,9 @@
 //! still appended verbatim (no marker or separator); other DSH update variants
 //! get a labelled line or an explicit ignore reason. With an exhausted model
 //! balance no chunks arrive, but the wiring is exercised and the connection
-//! status is visible.
+//! status is visible. The prompt is supplied as CLI arguments (or via
+//! `DSH_ACP_PROMPT`); with no input the original fixed prompt is used so the
+//! legacy demo still works.
 //!
 //! Lifetime: the repaint task holds only a `WeakEntity<StreamPanel>`, so it can
 //! never keep the view alive after its window is gone. Closing the window
@@ -30,6 +32,12 @@ use gpui::{
 use tokio::sync::Notify;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
+
+/// Prompt sent to the agent when the user supplies no CLI argument or env var.
+const DEFAULT_PROMPT: &str = "Explain this repository in one sentence.";
+
+/// Environment variable holding a user-supplied prompt (CLI arguments win).
+const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
 
 /// One independent transcript per ACP session, plus connection-level status.
 ///
@@ -273,7 +281,30 @@ async fn run_stream_pump(signal: &StreamSignal, mut on_change: impl FnMut() -> b
     }
 }
 
-fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal) {
+/// Resolve the prompt from CLI arguments, then the environment, then the
+/// built-in default.
+///
+/// All CLI arguments are joined with a single space so an unquoted shell
+/// invocation (`acp_stream_ui explain this repo`) still reads naturally.
+/// Surrounding whitespace is trimmed and blank input is ignored, so an empty
+/// argument or an explicitly empty environment variable cannot send a blank
+/// prompt to the agent. Kept pure so the input contract is regression-testable
+/// without opening GPUI or an ACP connection.
+fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
+    let from_args = args.join(" ");
+    let from_args = from_args.trim();
+    if !from_args.is_empty() {
+        return from_args.to_owned();
+    }
+
+    env_prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
+}
+
+fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: String) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -289,7 +320,6 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal) {
         };
         runtime.block_on(async move {
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-            let prompt = "Explain this repository in one sentence.".to_string();
 
             let mut cmd = tokio::process::Command::new("dsh");
             cmd.args(["--profile", "acp"])
@@ -362,12 +392,16 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let env_prompt = std::env::var(PROMPT_ENV).ok();
+    let prompt = resolve_prompt(&args, env_prompt.as_deref());
+
     let buffer = Arc::new(Mutex::new(StreamBuffer {
         status: "connecting to dsh --profile acp…".to_string(),
         sessions: HashMap::new(),
     }));
     let signal = StreamSignal::default();
-    spawn_acp(buffer.clone(), signal.clone());
+    spawn_acp(buffer.clone(), signal.clone(), prompt);
 
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| StreamPanel {
@@ -680,5 +714,58 @@ mod tests {
             .await
             .expect("pump must stop when its weak target no longer resolves")
             .expect("pump task must not panic");
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// A user-supplied CLI prompt replaces the previously hard-coded one.
+    #[test]
+    fn prompt_comes_from_cli_args() {
+        assert_eq!(
+            resolve_prompt(&args(&["Summarise", "the", "README"]), None),
+            "Summarise the README"
+        );
+    }
+
+    /// Several arguments are joined so an unquoted shell invocation works.
+    #[test]
+    fn prompt_joins_multiple_cli_args_with_spaces() {
+        assert_eq!(
+            resolve_prompt(&args(&["explain", "this", "repository"]), None),
+            "explain this repository"
+        );
+    }
+
+    /// With no CLI argument the environment variable is the next source.
+    #[test]
+    fn prompt_falls_back_to_environment_variable() {
+        assert_eq!(
+            resolve_prompt(&[], Some("  describe the tests  ")),
+            "describe the tests"
+        );
+    }
+
+    /// CLI arguments take precedence over the environment variable.
+    #[test]
+    fn prompt_cli_args_override_environment_variable() {
+        assert_eq!(
+            resolve_prompt(&args(&["from cli"]), Some("from env")),
+            "from cli"
+        );
+    }
+
+    /// Blank input at every layer falls back to the legacy fixed prompt, so an
+    /// empty argument can never send an empty prompt to the agent.
+    #[test]
+    fn prompt_falls_back_to_default_when_input_is_blank() {
+        assert_eq!(resolve_prompt(&[], None), DEFAULT_PROMPT);
+        assert_eq!(resolve_prompt(&[], Some("   ")), DEFAULT_PROMPT);
+        assert_eq!(
+            resolve_prompt(&args(&["   "]), Some("env prompt")),
+            "env prompt"
+        );
+        assert_eq!(resolve_prompt(&args(&["   "]), Some("   ")), DEFAULT_PROMPT);
     }
 }

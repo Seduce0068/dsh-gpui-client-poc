@@ -3,13 +3,19 @@
 //! Type a prompt and press Enter: the agent runs asynchronously through
 //! `cx.spawn`, and its reply is rendered back into the window. Uses a keyless
 //! echo provider so no model credentials are required.
+//!
+//! The loop opts into the shared `sessions`, `systemPrompt`, `goals` and
+//! `compaction` services, so turn events, goal interpolation and pressure
+//! compaction run through the same core seams as the other cordis demos.
 
 use std::pin::Pin;
 use std::sync::Arc;
 
 use cordis_rs::Context;
 use cordis_rs::core_services::{
-    AgentLoop, LlmProvider, StreamChunk, ToolCall, provide_llm, provide_tools,
+    AgentLoop, CompactionEngine, GoalStore, LlmProvider, LlmService, PromptSection, Session,
+    StreamChunk, SystemPrompt, ToolCall, ToolRegistry, provide_compaction, provide_goals,
+    provide_llm, provide_sessions, provide_system_prompt, provide_token_meter, provide_tools,
 };
 use gpui::{
     App, Application, AsyncApp, Context as GpuiContext, KeystrokeEvent, Render, SharedString,
@@ -34,6 +40,99 @@ fn echo_provider() -> LlmProvider {
             ])) as Pin<Box<dyn futures::Stream<Item = StreamChunk> + Send + Unpin>>
         }),
     )
+}
+
+/// Handles kept alongside the loop so tests can inspect the provided services
+/// and the session log the loop writes to. The handles are only read by the
+/// regression tests, so release builds allow them to be unused.
+#[cfg_attr(not(test), allow(dead_code))]
+struct PromptAgentRig {
+    ctx: Context,
+    session: Session,
+    llm: LlmService,
+    tools: ToolRegistry,
+    agent: Arc<AgentLoop>,
+}
+
+/// The single place where the loop opts into the four shared services.
+/// Keeping the chain in one function lets the tests exercise exactly the same
+/// wiring as the binary.
+fn wire_agent_loop(
+    llm: LlmService,
+    tools: ToolRegistry,
+    session: Session,
+    prompt: SystemPrompt,
+    goals: GoalStore,
+    compaction: CompactionEngine,
+) -> Arc<AgentLoop> {
+    Arc::new(
+        AgentLoop::new(llm, tools)
+            .with_call_parser(Arc::new(|_text: &str| Vec::<ToolCall>::new()))
+            .with_session(session)
+            .with_system_prompt(prompt)
+            .with_goals(goals)
+            .with_compaction(compaction),
+    )
+}
+
+impl PromptAgentRig {
+    async fn build() -> Result<Self, String> {
+        let ctx = Context::root("gpui-prompt-agent");
+        let (tools, _) = provide_tools(&ctx)
+            .await
+            .map_err(|error| error.to_string())?;
+        let llm = provide_llm(&ctx).await.map_err(|error| error.to_string())?;
+        let (sessions, _) = provide_sessions(&ctx)
+            .await
+            .map_err(|error| error.to_string())?;
+        let prompt = provide_system_prompt(&ctx)
+            .await
+            .map_err(|error| error.to_string())?;
+        let goals = provide_goals(&ctx)
+            .await
+            .map_err(|error| error.to_string())?;
+        let meter = provide_token_meter(&ctx)
+            .await
+            .map_err(|error| error.to_string())?;
+        let compaction = provide_compaction(&ctx, meter)
+            .await
+            .map_err(|error| error.to_string())?;
+        let session = sessions
+            .create(Some("gpui-prompt-session".to_string()), None)
+            .map_err(|error| error.to_string())?;
+
+        // Interpolation is only observable when a section and a live goal
+        // exist; register both so `with_goals` has something to inject.
+        prompt
+            .section(PromptSection::new(
+                "gpui-prompt-goal",
+                prompt.get_section_order("DEPLOYMENT_PERSONA_PREFIX"),
+                "Goal: {{goal}} ({{goal_status}})",
+            ))
+            .map_err(|error| error.to_string())?;
+        goals
+            .set("Answer the user's prompt", 10)
+            .map_err(|error| error.to_string())?;
+
+        let _provider = llm.register(echo_provider());
+        llm.set_default("echo");
+
+        let agent = wire_agent_loop(
+            llm.clone(),
+            tools.clone(),
+            session.clone(),
+            prompt,
+            goals,
+            compaction,
+        );
+        Ok(Self {
+            ctx,
+            session,
+            llm,
+            tools,
+            agent,
+        })
+    }
 }
 
 struct PromptAgentPanel {
@@ -149,16 +248,7 @@ impl Render for PromptAgentPanel {
 }
 
 async fn build_agent() -> Result<Arc<AgentLoop>, String> {
-    let ctx = Context::root("gpui-prompt-agent");
-    let (tools, _) = provide_tools(&ctx)
-        .await
-        .map_err(|error| error.to_string())?;
-    let llm = provide_llm(&ctx).await.map_err(|error| error.to_string())?;
-    let _provider = llm.register(echo_provider());
-    llm.set_default("echo");
-    Ok(Arc::new(AgentLoop::new(llm, tools).with_call_parser(
-        Arc::new(|_text: &str| Vec::<ToolCall>::new()),
-    )))
+    Ok(PromptAgentRig::build().await?.agent)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -208,6 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cordis_rs::core_services::{CompactionConfig, LlmRequest, SessionStore, TokenMeter};
 
     #[tokio::test]
     async fn agent_replies_to_a_prompt() {
@@ -230,5 +321,112 @@ mod tests {
         panel.finish("hi".to_string());
         assert!(!panel.busy);
         assert_eq!(panel.replies.last().unwrap().to_string(), "hi");
+    }
+
+    /// Regression: the four services must be registered on the context, and
+    /// `with_session` must record the full turn lifecycle on that session.
+    #[tokio::test]
+    async fn shared_services_are_provided_and_turn_is_logged() {
+        let rig = PromptAgentRig::build().await.unwrap();
+        assert!(rig.ctx.get::<SessionStore>("sessions").is_some());
+        assert!(rig.ctx.get::<SystemPrompt>("systemPrompt").is_some());
+        assert!(rig.ctx.get::<GoalStore>("goals").is_some());
+        assert!(rig.ctx.get::<CompactionEngine>("compaction").is_some());
+        assert!(rig.ctx.get::<TokenMeter>("tokenMeter").is_some());
+
+        let run = rig.agent.run("hello agent").await.unwrap();
+        assert_eq!(run.final_text, "hello agent");
+        let events: Vec<String> = rig
+            .session
+            .events()
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect();
+        assert_eq!(events.first().map(String::as_str), Some("turn/start"));
+        assert!(events.iter().any(|event| event == "user/message"));
+        assert!(events.iter().any(|event| event == "step/start"));
+        assert!(events.iter().any(|event| event == "assistant/message"));
+        assert!(events.iter().any(|event| event == "step/end"));
+        assert_eq!(events.last().map(String::as_str), Some("turn/end"));
+        // Default pressure is far below the threshold; no spurious compaction.
+        assert!(!events.iter().any(|event| event == "compaction/checkpoint"));
+    }
+
+    /// Regression: `with_system_prompt` plus `with_goals` must put the live
+    /// goal into the system message while leaving the user prompt last, which
+    /// is what the echo provider (and the DOM text) relies on.
+    #[tokio::test]
+    async fn goal_is_interpolated_into_the_system_message() {
+        let rig = PromptAgentRig::build().await.unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<LlmRequest>::new()));
+        let capture = seen.clone();
+        let provider = LlmProvider::new(
+            "capture",
+            "capture-1",
+            Arc::new(move |request| {
+                capture.lock().unwrap().push(request);
+                Box::pin(futures::stream::iter(vec![
+                    StreamChunk::Text("ok".to_string()),
+                    StreamChunk::Done,
+                ]))
+                    as Pin<Box<dyn futures::Stream<Item = StreamChunk> + Send + Unpin>>
+            }),
+        );
+        let _disposer = rig.llm.register(provider);
+        assert!(rig.llm.set_default("capture"));
+
+        let run = rig.agent.run("start").await.unwrap();
+        assert_eq!(run.final_text, "ok");
+        assert_eq!(run.steps.len(), 1);
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].messages[0].role, "system");
+        assert!(
+            requests[0].messages[0]
+                .content
+                .contains("Answer the user's prompt")
+        );
+        assert!(requests[0].messages[0].content.contains("active"));
+        assert_eq!(requests[0].messages[1].role, "user");
+        assert_eq!(requests[0].messages[1].content, "start");
+    }
+
+    /// Regression: the exact `wire_agent_loop` chain used by main must pass a
+    /// compaction engine through to the loop. A tiny budget forces pressure so
+    /// the checkpoint event can only appear if `with_compaction` is connected.
+    #[tokio::test]
+    async fn wired_compaction_appends_a_checkpoint_under_pressure() {
+        let rig = PromptAgentRig::build().await.unwrap();
+        let engine = CompactionEngine::new(
+            CompactionConfig {
+                pressure_threshold: 0.5,
+                head_chars: 2,
+                tail_chars: 2,
+            },
+            TokenMeter::new(1),
+        )
+        .unwrap();
+        let agent = wire_agent_loop(
+            rig.llm.clone(),
+            rig.tools.clone(),
+            rig.session.clone(),
+            rig.ctx
+                .get::<SystemPrompt>("systemPrompt")
+                .unwrap()
+                .as_ref()
+                .clone(),
+            rig.ctx.get::<GoalStore>("goals").unwrap().as_ref().clone(),
+            engine,
+        );
+        agent
+            .run("a long prompt that exceeds the tiny budget")
+            .await
+            .unwrap();
+        assert!(
+            rig.session
+                .events()
+                .iter()
+                .any(|event| event.event_type == "compaction/checkpoint")
+        );
     }
 }
