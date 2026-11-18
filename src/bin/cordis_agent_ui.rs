@@ -1,21 +1,22 @@
 //! GPUI view of a cordis-rs agent-loop run.
 //!
-//! Mounts the LLM / tools / fs / shell / jobs seams, registers the tool-fs and
-//! tool-bash ports, runs a scripted agent, and renders each step's model text
-//! and tool results in a GPUI window. No model credentials are needed.
+//! Mounts the LLM / tools / fs / shell / jobs seams, registers the read-only
+//! tool-fs and tool-bash ports, runs a scripted agent, and renders each step's
+//! model text and tool results in a GPUI window. No model credentials are needed.
 //!
 //! The loop also opts into the shared `sessions`, `systemPrompt`, `goals` and
 //! `compaction` services so the scripted run exercises the same core seams as
 //! the other cordis demos.
 
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cordis_rs::Context;
 use cordis_rs::core_services::{
-    AgentLoop, AgentRun, CompactionEngine, GoalStore, LlmProvider, LlmService, PromptSection,
-    Session, StreamChunk, SystemPrompt, ToolCall, ToolRegistry, provide_compaction, provide_fs,
+    AgentLoop, AgentRun, CompactionEngine, FileSystem, GoalStore, LlmProvider, LlmService,
+    PromptSection, Session, StreamChunk, SystemPrompt, ToolCall, ToolRegistry, provide_compaction,
     provide_goals, provide_jobs, provide_llm, provide_sessions, provide_shell,
     provide_system_prompt, provide_token_meter, provide_tools,
 };
@@ -23,6 +24,25 @@ use cordis_rs::plugin_ports::{ToolBashConfig, ToolFsConfig, mount_tool_bash, mou
 use gpui::{
     App, Application, Context as GpuiContext, Render, SharedString, Window, div, prelude::*, rgb,
 };
+
+/// Host-side allowed-root policy: every fs tool call is confined to the
+/// process's current directory. Path canonicalization (including `..`
+/// normalization and symlink resolution) is owned by the external crate's
+/// `FileSystem::scoped`; this host only chooses the root.
+fn scoped_fs_root() -> std::io::Result<PathBuf> {
+    std::env::current_dir()
+}
+
+/// Host-side tool policy: register only `read`. `write` and `edit` are disabled
+/// here via the external crate's config fields, without changing its API.
+fn read_only_tool_fs_config() -> ToolFsConfig {
+    ToolFsConfig {
+        read: true,
+        write: false,
+        edit: false,
+        ..ToolFsConfig::default()
+    }
+}
 
 fn scripted_provider() -> LlmProvider {
     let step = Arc::new(AtomicUsize::new(0));
@@ -32,8 +52,8 @@ fn scripted_provider() -> LlmProvider {
         Arc::new(move |_request| {
             let index = step.fetch_add(1, Ordering::SeqCst);
             let text = match index {
-                0 => "WRITE",
-                1 => "READ",
+                0 => "READ_MANIFEST",
+                1 => "READ_FIXTURE",
                 _ => "DONE",
             };
             Box::pin(futures::stream::iter(vec![
@@ -44,18 +64,17 @@ fn scripted_provider() -> LlmProvider {
     )
 }
 
+/// The scripted run only ever emits `read` calls: both paths live under the
+/// scoped root (the current directory), and no write/edit tool is mounted.
 fn parse_calls(text: &str) -> Vec<ToolCall> {
     match text {
-        "WRITE" => vec![ToolCall::new(
-            "write",
-            serde_json::json!({
-                "file_path": "/tmp/cordis-agent-ui.txt",
-                "content": "agent ui wrote this\n",
-            }),
-        )],
-        "READ" => vec![ToolCall::new(
+        "READ_MANIFEST" => vec![ToolCall::new(
             "read",
-            serde_json::json!({ "file_path": "/tmp/cordis-agent-ui.txt" }),
+            serde_json::json!({ "file_path": "Cargo.toml" }),
+        )],
+        "READ_FIXTURE" => vec![ToolCall::new(
+            "read",
+            serde_json::json!({ "file_path": "fixtures/text-turn.cordis.yml" }),
         )],
         _ => Vec::new(),
     }
@@ -98,7 +117,12 @@ impl AgentUiRig {
     async fn build() -> Result<Self, String> {
         let ctx = Context::root("gpui-agent-ui");
         let (tools, _) = provide_tools(&ctx).await.map_err(|e| e.to_string())?;
-        let fs = provide_fs(&ctx).await.map_err(|e| e.to_string())?;
+        let fs = FileSystem::scoped(scoped_fs_root().map_err(|e| e.to_string())?);
+        // Pre-provide the scoped filesystem so `mount_tool_fs` reuses it
+        // instead of installing its own unrooted `FileSystem::local`.
+        ctx.provide("fs", fs.clone())
+            .await
+            .map_err(|e| e.to_string())?;
         let shell = provide_shell(&ctx).await.map_err(|e| e.to_string())?;
         let _jobs = provide_jobs(&ctx).await.map_err(|e| e.to_string())?;
         let llm = provide_llm(&ctx).await.map_err(|e| e.to_string())?;
@@ -112,7 +136,7 @@ impl AgentUiRig {
             .await
             .map_err(|e| e.to_string())?;
 
-        let _fs_tools = mount_tool_fs(&ctx, fs, ToolFsConfig::default())
+        let _fs_tools = mount_tool_fs(&ctx, fs, read_only_tool_fs_config())
             .await
             .map_err(|e| e.to_string())?;
         let _bash_tools = mount_tool_bash(&ctx, shell, ToolBashConfig::default())
@@ -130,7 +154,7 @@ impl AgentUiRig {
             ))
             .map_err(|e| e.to_string())?;
         goals
-            .set("create and verify a file", 10)
+            .set("read and verify a file", 10)
             .map_err(|e| e.to_string())?;
 
         let _provider = llm.register(scripted_provider());
@@ -207,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run = runtime.block_on(async {
         let rig = AgentUiRig::build().await?;
         rig.agent
-            .run("create and verify a file")
+            .run("read and verify a file")
             .await
             .map_err(|e| e.to_string())
     })?;
@@ -229,15 +253,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cordis_rs::core_services::{CompactionConfig, LlmRequest, SessionStore, TokenMeter};
+    use cordis_rs::core_services::{
+        CompactionConfig, LlmRequest, SessionStore, TokenMeter, ToolError, ToolExecContext,
+    };
 
     #[tokio::test]
     async fn scripted_agent_runs_and_renders_steps() {
         let provider = scripted_provider();
         assert_eq!(provider.name(), "scripted");
-        assert_eq!(parse_calls("WRITE")[0].name, "write");
-        assert_eq!(parse_calls("READ")[0].name, "read");
+        assert_eq!(parse_calls("READ_MANIFEST")[0].name, "read");
+        assert_eq!(parse_calls("READ_FIXTURE")[0].name, "read");
         assert!(parse_calls("DONE").is_empty());
+        // The read-only script never emits a write/edit call.
+        assert!(parse_calls("WRITE").is_empty());
 
         // Same rig as main, but without a GPUI window, to verify the view data.
         let rig = AgentUiRig::build().await.unwrap();
@@ -325,7 +353,7 @@ mod tests {
         assert!(
             requests[0].messages[0]
                 .content
-                .contains("create and verify a file")
+                .contains("read and verify a file")
         );
         assert!(requests[0].messages[0].content.contains("active"));
         assert_eq!(requests[0].messages[1].role, "user");
@@ -364,5 +392,103 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == "compaction/checkpoint")
         );
+    }
+
+    /// Regression: the host config mounts only `read` and confines it to the
+    /// current directory (the manifest lives there). `write`/`edit` are not
+    /// registered, and an absolute path outside the root is rejected by the
+    /// external crate's scoped filesystem.
+    #[tokio::test]
+    async fn tool_fs_is_read_only_and_scoped_to_current_directory() {
+        let rig = AgentUiRig::build().await.unwrap();
+        let names = rig.tools.names();
+        assert_eq!(names.iter().filter(|name| *name == "read").count(), 1);
+        assert!(!names.iter().any(|name| name == "write"));
+        assert!(!names.iter().any(|name| name == "edit"));
+        assert!(rig.ctx.get::<FileSystem>("fs").is_some());
+
+        let exec = ToolExecContext::anonymous();
+        let ok = rig
+            .tools
+            .invoke(
+                "read",
+                serde_json::json!({ "file_path": "Cargo.toml" }),
+                exec.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(!ok.is_error());
+        assert!(
+            ok.rendered
+                .first()
+                .is_some_and(|line| line.contains("<path>Cargo.toml</path>"))
+        );
+
+        // `/etc/passwd` is outside the scoped root and is an existing path,
+        // so canonicalization cannot accidentally leave it un-normalized.
+        let escaped = rig
+            .tools
+            .invoke(
+                "read",
+                serde_json::json!({ "file_path": "/etc/passwd" }),
+                exec,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&escaped, ToolError::Execution(msg) if msg.contains("path escapes filesystem root")),
+            "unexpected error: {escaped}"
+        );
+    }
+
+    /// Regression: path policy is fixed by `FileSystem::scoped` without
+    /// touching the external crate API. Redundant `..` components normalize
+    /// back under the root; a parent traversal and a symlink that resolve to
+    /// an existing file outside the root are both rejected.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn scoped_root_normalizes_paths_and_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "dsh-toolfs-policy-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let root = base.join("root");
+        let subdir = root.join("subdir");
+        let outside = base.join("outside.txt");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(root.join("inside.txt"), "inside\n").unwrap();
+        std::fs::write(&outside, "outside\n").unwrap();
+        symlink(&outside, root.join("leak.txt")).unwrap();
+
+        let fs = FileSystem::scoped(&root);
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+
+        // Redundant components and an absolute in-root path stay allowed.
+        assert_eq!(fs.read_text("subdir/../inside.txt").unwrap(), "inside\n");
+        assert_eq!(
+            fs.read_text(canonical_root.join("inside.txt").to_str().unwrap())
+                .unwrap(),
+            "inside\n"
+        );
+
+        // Existing targets outside the root are rejected after canonicalization.
+        let escape = fs.read_text("../outside.txt").unwrap_err();
+        assert!(
+            escape.to_string().contains("path escapes filesystem root"),
+            "unexpected error: {escape}"
+        );
+        let symlink_escape = fs.read_text("leak.txt").unwrap_err();
+        assert!(
+            symlink_escape
+                .to_string()
+                .contains("path escapes filesystem root"),
+            "unexpected error: {symlink_escape}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

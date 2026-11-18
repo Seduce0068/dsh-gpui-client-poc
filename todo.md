@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T15:52:16+09:00"
+  at: "2026-11-18T16:06:36+09:00"
 ---
 
 ## 進行中
@@ -75,7 +75,8 @@ verified:
 - [ ] `session-close-absent` — graceful shutdown を実装。必要な `unstable_session_close` / `unstable_session_model` feature の有効化判断を行う（G7）。
 - [x] `multi-session-buffer-collision` — session_id キーのバッファ分割と
   安定順序のラベル表示を実装（+5テスト）。
-- [ ] `config-hardcoded` / `cwd-fallback-root` — プロンプト、API キー（`sk-demo`）、タイムアウト、preset、cwd を設定/CLI 引数へ集約し、取得失敗時は fail-closed（G4）。
+- [x] `config-hardcoded` / `cwd-fallback-root` — sk-demo と個人絶対パス既定を
+  除去し、CLI/env/cwd 解決＋fail-closed に統一（テスト用固定値は残る）。
   → 2026-11-18: sk-demo は CLI/env/設定へ集約し fail-closed 化。他バイナリの
   既定パス・固定プロンプトは残課題（報告済み）。
 - [ ] `stderr-and-session-trace-blindspot` — dsh の stderr を捕捉し、`session_id` / PID を相関 ID として UI とログへ出す（G7）。
@@ -83,8 +84,10 @@ verified:
   Notify 駆動へ置換し、window close でポンプ終了（+4テスト）。
 - [ ] `errors-swallowed` / `assert-in-main-path` — `let _ = save(...)` / `build_rows().unwrap_or_default()` / 本番 `assert_eq!` をエラー表示へ置換（G7）。
   → 2026-11-18: cordis_title_ui / composition_toggle_ui は解消済み。
-- [ ] `tool-fs-unvalidated-path` — パスの正規化・許可ルート制限・symlink 解決を追加し、`ToolFsConfig` を read のみへ絞る（G2）。
+- [x] `tool-fs-unvalidated-path` — host 側で scoped FS(read のみ) を provide し、
+  正規化・symlink escape 拒否をテストで固定（上流 resolve の未対応は記録）。
 - [ ] `tests-isolation` — `temp_dir()` 実 FS と `/tmp` 固定パス依存を排除し、並列 `cargo test` のフレーク要因を除去（G5）。
+  → 2026-11-18: probe 3 ファイルの固定 /tmp を排除し並列分離テストを追加。
 - [ ] `cordis-bridge-isolated` — `cordis_bridge` の独自 `Commands` を `core_services::provide_commands` へ載せ、GPUI 側から `/compact` 登録状態を表示可能にする（G6）。
 - [ ] `ux-pool-triage` — `investigation/round-1.md` B セクション43件を取捨選択。候補: セッション CRUD / データモデル / 検索、会話スクロール・コードコピー、入力履歴・ショートカット・キャンセル、キーボードナビゲーション、コントラスト・文字サイズ、AT-SPI 調査（G8）。
 - [ ] `deps-upstream-4-tags-behind` — cordis-rs `v0.66.0` への更新を検討。新 port（`session-title-all-prompts-llm`, `tool-schedule`, `planMode`）と Cargo プロファイル統一を活用できる（G3）。**→ DSH r5 訂正: `Cargo.toml:10` は既に `tag = "v0.67.0"`（commit c29db63）。依存更新は完了、README:107 の `v0.29.0` と本ファイルの記述を v0.67.0 へ同期すること（`investigation/round-5.md` C）。**

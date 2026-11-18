@@ -358,4 +358,27 @@ mod tests {
             "429 must not reuse the balance hint"
         );
     }
+
+    /// Regression for parallel-test isolation: this probe has no fixed `/tmp`
+    /// path (it uses `build_session_cwd()` -> `current_dir()`), but concurrent
+    /// offline runs must still keep their streamed bodies separate.
+    #[tokio::test]
+    async fn concurrent_offline_prompts_stay_isolated() {
+        let first = spawn_fake_agent(&["2+2", "=4"]);
+        let second = spawn_fake_agent(&["3+3", "=6"]);
+
+        let (first_body, second_body) = tokio::join!(
+            acp_prompt_over("1+1は？".to_string(), first),
+            acp_prompt_over("2+2は？".to_string(), second),
+        );
+
+        assert_eq!(
+            first_body.expect("first offline prompt should succeed"),
+            "2+2=4"
+        );
+        assert_eq!(
+            second_body.expect("second offline prompt should succeed"),
+            "3+3=6"
+        );
+    }
 }

@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -91,6 +91,33 @@ mod tests {
         /// (session id, prompt text) seen by the fake agent.
         prompts: Mutex<Vec<(SessionId, String)>>,
         session_new_count: AtomicUsize,
+    }
+
+    /// Per-test temporary cwd, removed on drop.
+    ///
+    /// A shared fixed `/tmp/...` path can collide between parallel tests, so
+    /// the path is made unique with the process id plus a call counter.
+    struct TestCwd(PathBuf);
+
+    impl TestCwd {
+        fn new(tag: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let seq = NEXT.fetch_add(1, Ordering::SeqCst);
+            let path =
+                std::env::temp_dir().join(format!("dsh-gpui-{tag}-{}-{seq}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("create per-test temp cwd");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestCwd {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     /// Serve a fake ACP agent on one end of an in-process duplex channel.
@@ -146,10 +173,10 @@ mod tests {
     async fn prompt_reaches_fake_agent_and_returns_stop_reason() {
         let observed = Arc::new(Observed::default());
         let client_channel = spawn_fake_agent(Arc::clone(&observed));
-        let cwd = PathBuf::from("/tmp/offline-prompt-probe");
+        let cwd = TestCwd::new("prompt");
         let prompt = "1+1は？".to_string();
 
-        let stop_reason = prompt_over(cwd.clone(), prompt.clone(), client_channel)
+        let stop_reason = prompt_over(cwd.path().to_path_buf(), prompt.clone(), client_channel)
             .await
             .expect("offline prompt should succeed");
 
@@ -159,8 +186,32 @@ mod tests {
         // These values are only observable if the real requests traversed the
         // channel, so they assert the handshake and prompt really ran.
         assert_eq!(observed.session_new_count.load(Ordering::SeqCst), 1);
-        assert_eq!(*observed.cwd.lock().unwrap(), Some(cwd));
+        assert_eq!(
+            *observed.cwd.lock().unwrap(),
+            Some(cwd.path().to_path_buf())
+        );
         let seen = observed.prompts.lock().unwrap().clone();
         assert_eq!(seen, vec![(SessionId::from(SESSION_ID), prompt)]);
+    }
+
+    /// Regression: every test gets its own temp cwd, so parallel runs cannot
+    /// share (or race on) a hardcoded `/tmp` directory.
+    #[test]
+    fn per_test_cwds_are_unique_and_real() {
+        let first = TestCwd::new("prompt");
+        let second = TestCwd::new("prompt");
+
+        assert_ne!(
+            first.path(),
+            second.path(),
+            "two tests must not receive the same cwd"
+        );
+        assert!(first.path().is_dir(), "cwd must be a real directory");
+        assert!(second.path().is_dir(), "cwd must be a real directory");
+        assert!(
+            first.path().starts_with(std::env::temp_dir()),
+            "cwd must live under the temp directory: {}",
+            first.path().display()
+        );
     }
 }

@@ -102,7 +102,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use agent_client_protocol::schema::{
@@ -121,6 +122,33 @@ mod tests {
         cwd: Mutex<Option<PathBuf>>,
         /// (session id, prompt text) seen by the fake agent.
         prompt: Mutex<Option<(SessionId, String)>>,
+    }
+
+    /// Per-test temporary cwd, removed on drop.
+    ///
+    /// A shared fixed `/tmp/...` path can collide between parallel tests, so
+    /// the path is made unique with the process id plus a call counter.
+    struct TestCwd(PathBuf);
+
+    impl TestCwd {
+        fn new(tag: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let seq = NEXT.fetch_add(1, Ordering::SeqCst);
+            let path =
+                std::env::temp_dir().join(format!("dsh-gpui-{tag}-{}-{seq}", std::process::id()));
+            std::fs::create_dir_all(&path).expect("create per-test temp cwd");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestCwd {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     /// Serve a fake ACP agent over an in-process duplex channel.
@@ -180,19 +208,23 @@ mod tests {
     async fn agent_message_chunks_are_captured_in_order() {
         let observed = Arc::new(Observed::default());
         let client_channel = spawn_fake_agent(&["2+2", "=4"], Arc::clone(&observed));
-        let cwd = PathBuf::from("/tmp/offline-stream-probe");
+        let cwd = TestCwd::new("stream");
         let prompt = "1+1은?".to_string();
 
-        let (collected, outcome) = stream_prompt_over(cwd.clone(), prompt.clone(), client_channel)
-            .await
-            .expect("offline stream run should succeed");
+        let (collected, outcome) =
+            stream_prompt_over(cwd.path().to_path_buf(), prompt.clone(), client_channel)
+                .await
+                .expect("offline stream run should succeed");
 
         assert_eq!(collected, vec!["2+2".to_string(), "=4".to_string()]);
         assert_eq!(outcome, "stop_reason = EndTurn");
 
         // These values are only observable if the real requests traversed the
         // channel, so they assert the handshake and prompt really ran.
-        assert_eq!(*observed.cwd.lock().unwrap(), Some(cwd));
+        assert_eq!(
+            *observed.cwd.lock().unwrap(),
+            Some(cwd.path().to_path_buf())
+        );
         assert_eq!(
             *observed.prompt.lock().unwrap(),
             Some((SessionId::from(SESSION_ID), prompt))
@@ -203,9 +235,10 @@ mod tests {
     async fn no_chunks_are_captured_when_agent_streams_no_text() {
         let observed = Arc::new(Observed::default());
         let client_channel = spawn_fake_agent(&[], Arc::clone(&observed));
+        let cwd = TestCwd::new("stream-empty");
 
         let (collected, outcome) = stream_prompt_over(
-            PathBuf::from("/tmp/offline-stream-probe"),
+            cwd.path().to_path_buf(),
             "1+1은?".to_string(),
             client_channel,
         )
@@ -214,5 +247,30 @@ mod tests {
 
         assert!(collected.is_empty());
         assert_eq!(outcome, "stop_reason = EndTurn");
+        assert_eq!(
+            *observed.cwd.lock().unwrap(),
+            Some(cwd.path().to_path_buf())
+        );
+    }
+
+    /// Regression: every test gets its own temp cwd, so parallel runs cannot
+    /// share (or race on) a hardcoded `/tmp` directory.
+    #[test]
+    fn per_test_cwds_are_unique_and_real() {
+        let first = TestCwd::new("stream");
+        let second = TestCwd::new("stream");
+
+        assert_ne!(
+            first.path(),
+            second.path(),
+            "two tests must not receive the same cwd"
+        );
+        assert!(first.path().is_dir(), "cwd must be a real directory");
+        assert!(second.path().is_dir(), "cwd must be a real directory");
+        assert!(
+            first.path().starts_with(std::env::temp_dir()),
+            "cwd must live under the temp directory: {}",
+            first.path().display()
+        );
     }
 }
