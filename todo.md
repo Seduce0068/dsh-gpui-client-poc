@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T17:52:35+09:00"
+  at: "2026-11-18T17:53:02+09:00"
 ---
 
 ## 進行中
@@ -109,7 +109,8 @@ verified:
 - [x] `deps-upstream-4-tags-behind` — cordis-rs は v0.133.0 に同期済み、
   README / レビュー文書の版数記述も訂正（2026-11-18）。
 - [ ] `tests-stage-b-online` — モデル残高回復後に `acp_prompt_probe` を1回実行し、本文非空と stop reason を記録する（G5）。
-  → 2026-11-18: 残高 0 USD で実行不能（認証・ACP 接続は健全）。
+  → 2026-11-18 17:52 JST 再確認: GET /user/balance が is_available=false /
+  total_balance=0.00 USD。認証情報は有、ACP ハンドシェイクは成功。
   ユーザーによるチャージ後に課金送信を実施する必要がある。
 
 ### 優先度: 低
