@@ -21,6 +21,18 @@ struct TitleRow {
     source: &'static str,
 }
 
+/// Stable label for a window row. Kept pure so the existing
+/// `session [source]: title` DOM hook is covered by a regression test.
+fn row_label(row: &TitleRow) -> String {
+    format!("{} [{}]: {}", row.session_id, row.source, row.title)
+}
+
+/// Initialization failures are rendered in the window instead of being
+/// silently converted into an empty row list.
+fn init_error_line(error: &str) -> String {
+    format!("init error: {error}")
+}
+
 fn build_rows() -> Result<Vec<TitleRow>, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -71,6 +83,8 @@ fn build_rows() -> Result<Vec<TitleRow>, String> {
 
 struct TitlePanel {
     rows: Arc<Vec<TitleRow>>,
+    /// `build_rows()` failure, shown in the window instead of empty rows.
+    error: Option<SharedString>,
 }
 
 impl Render for TitlePanel {
@@ -84,23 +98,87 @@ impl Render for TitlePanel {
             .gap_3()
             .text_color(rgb(0xe8e8ef))
             .child(div().text_xl().child("cordis-rs × GPUI — session titles"));
+        if let Some(error) = &self.error {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xff6b6b))
+                    .child(error.clone()),
+            );
+        }
         for row in self.rows.iter() {
-            pane = pane.child(div().p_3().rounded_md().bg(rgb(0x24242c)).child(
-                SharedString::from(format!(
-                    "{} [{}]: {}",
-                    row.session_id, row.source, row.title
-                )),
-            ));
+            pane = pane.child(
+                div()
+                    .p_3()
+                    .rounded_md()
+                    .bg(rgb(0x24242c))
+                    .child(SharedString::from(row_label(row))),
+            );
         }
         pane
     }
 }
 
 fn main() {
-    let rows = Arc::new(build_rows().unwrap_or_default());
+    let (rows, error) = match build_rows() {
+        Ok(rows) => (Arc::new(rows), None),
+        Err(error) => {
+            let message = init_error_line(&error);
+            eprintln!("cordis_title_ui: {message}");
+            (
+                Arc::<Vec<TitleRow>>::new(Vec::new()),
+                Some(SharedString::from(message)),
+            )
+        }
+    };
     Application::new().run(move |cx: &mut App| {
-        let panel = cx.new(|_cx| TitlePanel { rows: rows.clone() });
+        let panel = cx.new(|_cx| TitlePanel {
+            rows: rows.clone(),
+            error: error.clone(),
+        });
         let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
         eprintln!("cordis_title_ui: GPUI window created");
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_label_preserves_existing_session_source_title_hook() {
+        let row = TitleRow {
+            session_id: "s-llm".to_string(),
+            title: "Rust Plugin Port".to_string(),
+            source: "llm",
+        };
+        assert_eq!(row_label(&row), "s-llm [llm]: Rust Plugin Port");
+    }
+
+    #[test]
+    fn init_error_is_shown_instead_of_empty_rows() {
+        let message = init_error_line("boom");
+        assert_eq!(message, "init error: boom");
+        let panel = TitlePanel {
+            rows: Arc::new(Vec::new()),
+            error: Some(SharedString::from(message.clone())),
+        };
+        assert_eq!(
+            panel.error.as_ref().map(|error| error.to_string()),
+            Some(message)
+        );
+        assert!(panel.rows.is_empty());
+    }
+
+    #[test]
+    fn build_rows_still_provides_both_title_rows() {
+        let rows = build_rows().expect("title demo should build");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].session_id, "s-llm");
+        assert_eq!(rows[0].source, "llm");
+        assert!(!rows[0].title.is_empty());
+        assert_eq!(rows[1].session_id, "s-fallback");
+        assert_eq!(rows[1].source, "fallback");
+        assert!(!rows[1].title.is_empty());
+    }
 }
