@@ -1,14 +1,69 @@
 //! Probe: verify a Rust ACP client can initialize and open a session on
 //! `dsh --profile acp`. No prompt is sent, so no model credentials are used.
+//!
+//! # 出力契約 (log stream contract)
+//!
+//! 全ての出力は `emit` を通り、行の種別でストリームが決まる。
+//! - `ProbeStream::Stdout`（`println!`）: 通常出力＝パイプ・grep 対象の結果。
+//!   本 probe では handshake 成功行（INIT OK / SESSION OK）がこれに該当する。
+//! - `ProbeStream::Stderr`（`eprintln!`）: 診断出力のみ。起動コンテキスト
+//!   （cwd）、子プロセスの警告、shutdown 結果。結果を決して stderr に
+//!   隠さない（旧挙動では stdout が空でパイプ処理できなかった）。
 
 use agent_client_protocol::schema::{
     InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, ProtocolVersion,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+// ---- Output contract: one routing point for stdout vs stderr -------------
+//
+// `emit` が宛先を一箇所で固定する。テストはスレッドローカルの
+// `OUTPUT_CAPTURE` に差し替えて、グローバルな stdout/stderr を奪わずに
+// 各呼び出し箇所のストリームを検証する（本番は None のまま）。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeStream {
+    Stdout,
+    Stderr,
+}
+
+thread_local! {
+    static OUTPUT_CAPTURE: RefCell<Option<Vec<(ProbeStream, String)>>> =
+        const { RefCell::new(None) };
+}
+
+fn emit(stream: ProbeStream, line: &str) {
+    let captured = OUTPUT_CAPTURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(lines) = slot.as_mut() {
+            lines.push((stream, line.to_string()));
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        match stream {
+            ProbeStream::Stdout => println!("{line}"),
+            ProbeStream::Stderr => eprintln!("{line}"),
+        }
+    }
+}
+
+#[cfg(test)]
+fn start_capture() {
+    OUTPUT_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+fn take_capture() -> Vec<(ProbeStream, String)> {
+    OUTPUT_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default())
+}
 
 // ---- Secure `dsh` launch -------------------------------------------------
 //
@@ -129,16 +184,41 @@ async fn shutdown_child(child: &mut tokio::process::Child, grace: Duration) -> S
     match tokio::time::timeout(grace, child.wait()).await {
         Ok(Ok(_status)) => ShutdownOutcome::Exited,
         Ok(Err(error)) => {
-            eprintln!("child wait failed: {error}");
+            emit(ProbeStream::Stderr, &format!("child wait failed: {error}"));
             ShutdownOutcome::WaitFailed
         }
         Err(_elapsed) => {
-            eprintln!("child did not exit within {grace:?}; killing");
+            emit(
+                ProbeStream::Stderr,
+                &format!("child did not exit within {grace:?}; killing"),
+            );
             let _ = child.kill().await;
             let _ = child.wait().await; // reap so no zombie is left behind
             ShutdownOutcome::KilledAfterTimeout
         }
     }
+}
+
+/// 起動コンテキストは診断情報なので stderr へ。
+fn report_startup(cwd: &Path) {
+    emit(ProbeStream::Stderr, &format!("cwd = {}", cwd.display()));
+}
+
+/// handshake の成功結果はパイプ可能な結果なので stdout へ。
+fn report_handshake(init: &InitializeResponse, session: &NewSessionResponse) {
+    emit(
+        ProbeStream::Stdout,
+        &format!("INIT OK: agent_info={:?}", init.agent_info),
+    );
+    emit(
+        ProbeStream::Stdout,
+        &format!("SESSION OK: id={:?}", session.session_id),
+    );
+}
+
+/// teardown の成否は診断情報なので stderr へ。
+fn report_shutdown(outcome: ShutdownOutcome) {
+    emit(ProbeStream::Stderr, &format!("SHUTDOWN = {outcome:?}"));
 }
 
 /// Run the ACP handshake (`initialize` + `session/new`) over any transport.
@@ -171,7 +251,7 @@ async fn initialize_and_open_session(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    eprintln!("cwd = {}", cwd.display());
+    report_startup(&cwd);
 
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
@@ -185,14 +265,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
     let (init, session) = initialize_and_open_session(cwd, transport).await?;
-    eprintln!("INIT OK: agent_info={:?}", init.agent_info);
-    eprintln!("SESSION OK: id={:?}", session.session_id);
+    report_handshake(&init, &session);
 
     // The ACP connection (and with it the stdio transport / our stdin write
     // half) was dropped when `initialize_and_open_session` returned, so the
     // agent has already seen EOF. Wait for a clean exit before killing.
     let outcome = shutdown_child(&mut child, Duration::from_secs(5)).await;
-    eprintln!("SHUTDOWN = {outcome:?}");
+    report_shutdown(outcome);
     Ok(())
 }
 
@@ -209,7 +288,10 @@ mod tests {
     };
     use agent_client_protocol::{Agent, Channel};
 
-    use super::{ShutdownOutcome, initialize_and_open_session, shutdown_child};
+    use super::{
+        ProbeStream, ShutdownOutcome, initialize_and_open_session, report_handshake,
+        report_shutdown, report_startup, shutdown_child, start_capture, take_capture,
+    };
 
     const SESSION_ID: &str = "offline-probe-session";
     const AGENT_NAME: &str = "offline-fake-agent";
@@ -347,6 +429,65 @@ mod tests {
         let outcome = shutdown_child(&mut child, Duration::from_millis(100)).await;
 
         assert_eq!(outcome, ShutdownOutcome::KilledAfterTimeout);
+    }
+
+    // ---- 出力契約の回帰テスト（stdout/stderr の使い分け） ----
+
+    /// 成功結果は stdout、起動 context と shutdown は stderr へ。
+    /// 旧挙動（INIT OK / SESSION OK が stderr のみ）の再発を防ぐ。
+    #[test]
+    fn results_go_to_stdout_and_diagnostics_to_stderr() {
+        let init = InitializeResponse::new(ProtocolVersion::V1)
+            .agent_info(Implementation::new(AGENT_NAME, "0.0.0"));
+        let session = NewSessionResponse::new(SessionId::from(SESSION_ID));
+
+        start_capture();
+        report_startup(std::path::Path::new("/work"));
+        report_handshake(&init, &session);
+        report_shutdown(ShutdownOutcome::Exited);
+        let lines = take_capture();
+
+        assert_eq!(
+            lines,
+            vec![
+                (ProbeStream::Stderr, "cwd = /work".to_string()),
+                (
+                    ProbeStream::Stdout,
+                    format!("INIT OK: agent_info={:?}", init.agent_info)
+                ),
+                (
+                    ProbeStream::Stdout,
+                    format!("SESSION OK: id={:?}", session.session_id)
+                ),
+                (ProbeStream::Stderr, "SHUTDOWN = Exited".to_string()),
+            ]
+        );
+    }
+
+    /// kill に至る警告も診断なので stderr に留まり、結果ストリームを汚さない。
+    #[tokio::test]
+    async fn shutdown_child_warning_stays_on_stderr() {
+        start_capture();
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a long-lived child");
+
+        let outcome = shutdown_child(&mut child, Duration::from_millis(100)).await;
+        let lines = take_capture();
+
+        assert_eq!(outcome, ShutdownOutcome::KilledAfterTimeout);
+        assert!(!lines.is_empty(), "kill path must emit a diagnostic");
+        assert!(
+            lines
+                .iter()
+                .all(|(stream, _)| *stream == ProbeStream::Stderr),
+            "shutdown diagnostics must never pollute stdout: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|(_, text)| text.contains("killing")),
+            "the timeout warning must be present: {lines:?}"
+        );
     }
 
     // ---- Secure `dsh` launch: offline regression tests (no subprocess) ----

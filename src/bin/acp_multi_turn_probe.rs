@@ -6,7 +6,16 @@
 //!
 //! Requires a working model provider in the environment; with an exhausted
 //! balance the prompts still reach ACP and return an error stop reason.
+//!
+//! # 出力契約 (log stream contract)
+//!
+//! 全ての出力は `emit` を通り、行の種別でストリームが決まる。
+//! - `ProbeStream::Stdout`（`println!`）: 通常出力＝パイプ・grep 対象の結果。
+//!   session id、prompt / stop_reason のトレース、完了サマリが該当する。
+//! - `ProbeStream::Stderr`（`eprintln!`）: 診断出力のみ。子プロセスの警告と
+//!   shutdown 結果。結果を stderr に混ぜない。
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +26,51 @@ use agent_client_protocol::schema::{
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+// ---- Output contract: one routing point for stdout vs stderr -------------
+//
+// `emit` が宛先を一箇所で固定する。テストはスレッドローカルの
+// `OUTPUT_CAPTURE` に差し替えて、グローバルな stdout/stderr を奪わずに
+// 各呼び出し箇所のストリームを検証する（本番は None のまま）。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeStream {
+    Stdout,
+    Stderr,
+}
+
+thread_local! {
+    static OUTPUT_CAPTURE: RefCell<Option<Vec<(ProbeStream, String)>>> =
+        const { RefCell::new(None) };
+}
+
+fn emit(stream: ProbeStream, line: &str) {
+    let captured = OUTPUT_CAPTURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(lines) = slot.as_mut() {
+            lines.push((stream, line.to_string()));
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        match stream {
+            ProbeStream::Stdout => println!("{line}"),
+            ProbeStream::Stderr => eprintln!("{line}"),
+        }
+    }
+}
+
+#[cfg(test)]
+fn start_capture() {
+    OUTPUT_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+fn take_capture() -> Vec<(ProbeStream, String)> {
+    OUTPUT_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default())
+}
 
 // ---- Secure `dsh` launch -------------------------------------------------
 //
@@ -135,16 +189,32 @@ async fn shutdown_child(child: &mut tokio::process::Child, grace: Duration) -> S
     match tokio::time::timeout(grace, child.wait()).await {
         Ok(Ok(_status)) => ShutdownOutcome::Exited,
         Ok(Err(error)) => {
-            eprintln!("child wait failed: {error}");
+            emit(ProbeStream::Stderr, &format!("child wait failed: {error}"));
             ShutdownOutcome::WaitFailed
         }
         Err(_elapsed) => {
-            eprintln!("child did not exit within {grace:?}; killing");
+            emit(
+                ProbeStream::Stderr,
+                &format!("child did not exit within {grace:?}; killing"),
+            );
             let _ = child.kill().await;
             let _ = child.wait().await; // reap so no zombie is left behind
             ShutdownOutcome::KilledAfterTimeout
         }
     }
+}
+
+/// 完了サマリはパイプ可能な結果なので stdout へ。
+fn report_completed(prompt_count: usize) {
+    emit(
+        ProbeStream::Stdout,
+        &format!("multi-turn probe completed: {prompt_count} prompts on one session"),
+    );
+}
+
+/// teardown の成否は診断情報なので stderr へ。
+fn report_shutdown(outcome: ShutdownOutcome) {
+    emit(ProbeStream::Stderr, &format!("SHUTDOWN = {outcome:?}"));
 }
 
 /// Send every prompt on one ACP session over an arbitrary transport.
@@ -169,11 +239,11 @@ async fn multi_turn_over(
                 .block_task()
                 .await?;
             let session_id = session.session_id.clone();
-            println!("session = {session_id}");
+            emit(ProbeStream::Stdout, &format!("session = {session_id}"));
 
             let mut stop_reasons = Vec::new();
             for prompt in prompts {
-                println!("prompt => {prompt}");
+                emit(ProbeStream::Stdout, &format!("prompt => {prompt}"));
                 // A model-side failure (e.g. Insufficient Balance) still
                 // proves the prompt reached this session; keep the loop going.
                 let reason = match connection
@@ -187,7 +257,7 @@ async fn multi_turn_over(
                     Ok(response) => format!("{:?}", response.stop_reason),
                     Err(error) => format!("error: {error}"),
                 };
-                println!("  stop_reason = {reason}");
+                emit(ProbeStream::Stdout, &format!("  stop_reason = {reason}"));
                 stop_reasons.push(reason);
             }
             // All prompts were sent to the same session id.
@@ -221,16 +291,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     assert_eq!(stop_reasons.len(), 2);
-    println!(
-        "multi-turn probe completed: {} prompts on one session",
-        stop_reasons.len()
-    );
+    report_completed(stop_reasons.len());
     let _ = session_id;
 
     // All turns are done and the ACP connection has been dropped, so the
     // agent has seen EOF on stdin. Wait for a clean exit before killing.
     let outcome = shutdown_child(&mut child, Duration::from_secs(5)).await;
-    eprintln!("SHUTDOWN = {outcome:?}");
+    report_shutdown(outcome);
     Ok(())
 }
 
@@ -247,7 +314,10 @@ mod tests {
     };
     use agent_client_protocol::{Agent, Channel};
 
-    use super::{ShutdownOutcome, multi_turn_over, shutdown_child};
+    use super::{
+        ProbeStream, ShutdownOutcome, multi_turn_over, report_completed, report_shutdown,
+        shutdown_child, start_capture, take_capture,
+    };
 
     const SESSION_ID: &str = "offline-multi-turn-session";
 
@@ -366,6 +436,91 @@ mod tests {
         let outcome = shutdown_child(&mut child, Duration::from_millis(100)).await;
 
         assert_eq!(outcome, ShutdownOutcome::KilledAfterTimeout);
+    }
+
+    // ---- 出力契約の回帰テスト（stdout/stderr の使い分け） ----
+
+    /// session / prompt / stop_reason のトレースは全て結果なので stdout へ。
+    #[tokio::test]
+    async fn multi_turn_trace_lines_are_results_on_stdout() {
+        let observed = Arc::new(Observed::default());
+        let client_channel = spawn_fake_agent(Arc::clone(&observed));
+        let prompts = vec!["first".to_string(), "second".to_string()];
+
+        start_capture();
+        let (_session_id, stop_reasons) = multi_turn_over(
+            PathBuf::from("/tmp/offline-multi-turn"),
+            prompts.clone(),
+            client_channel,
+        )
+        .await
+        .expect("offline multi-turn run should succeed");
+        let lines = take_capture();
+
+        assert_eq!(stop_reasons, vec!["EndTurn", "MaxTokens"]);
+        assert!(!lines.is_empty(), "the trace must be observable");
+        assert!(
+            lines
+                .iter()
+                .all(|(stream, _)| *stream == ProbeStream::Stdout),
+            "trace lines must never go to stderr: {lines:?}"
+        );
+        let texts: Vec<_> = lines.iter().map(|(_, text)| text.as_str()).collect();
+        assert!(
+            texts.iter().any(|text| text.starts_with("session = ")),
+            "session id must be a stdout result: {texts:?}"
+        );
+        let first_prompt = format!("prompt => {}", prompts[0]);
+        assert!(
+            texts.contains(&first_prompt.as_str()),
+            "prompt echo must be a stdout result: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"  stop_reason = EndTurn"),
+            "stop reason must be a stdout result: {texts:?}"
+        );
+    }
+
+    /// 完了サマリは結果（stdout）、shutdown は診断（stderr）。
+    #[test]
+    fn summary_is_stdout_and_shutdown_is_stderr() {
+        start_capture();
+        report_completed(2);
+        report_shutdown(ShutdownOutcome::Exited);
+        let lines = take_capture();
+
+        assert_eq!(
+            lines,
+            vec![
+                (
+                    ProbeStream::Stdout,
+                    "multi-turn probe completed: 2 prompts on one session".to_string()
+                ),
+                (ProbeStream::Stderr, "SHUTDOWN = Exited".to_string()),
+            ]
+        );
+    }
+
+    /// kill に至る警告も診断なので stderr に留まる。
+    #[tokio::test]
+    async fn shutdown_child_warning_stays_on_stderr() {
+        start_capture();
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a long-lived child");
+
+        let outcome = shutdown_child(&mut child, Duration::from_millis(100)).await;
+        let lines = take_capture();
+
+        assert_eq!(outcome, ShutdownOutcome::KilledAfterTimeout);
+        assert!(!lines.is_empty(), "kill path must emit a diagnostic");
+        assert!(
+            lines
+                .iter()
+                .all(|(stream, _)| *stream == ProbeStream::Stderr),
+            "shutdown diagnostics must never pollute stdout: {lines:?}"
+        );
     }
 
     // ---- Secure `dsh` launch: offline regression tests (no subprocess) ----

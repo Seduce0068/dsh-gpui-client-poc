@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T16:33:00+09:00"
+  at: "2026-11-18T16:45:00+09:00"
 ---
 
 ## 進行中
@@ -93,7 +93,8 @@ verified:
   → 2026-11-18: probe 3 ファイルの固定 /tmp を排除し並列分離テストを追加。
 - [x] `cordis-bridge-isolated` — 共有 CommandRegistry へ /compact を登録し、
   GPUI 側から registered commands を観測可能に（+2テスト）。
-- [ ] `ux-pool-triage` — `investigation/round-1.md` B セクション43件を取捨選択。候補: セッション CRUD / データモデル / 検索、会話スクロール・コードコピー、入力履歴・ショートカット・キャンセル、キーボードナビゲーション、コントラスト・文字サイズ、AT-SPI 調査（G8）。
+- [x] `ux-pool-triage` — 43件を対応済み6/却下2/次フェーズ35へ分類
+  （investigation/ux-pool-triage.md）。
 - [x] `deps-upstream-4-tags-behind` — cordis-rs は v0.133.0 に同期済み、
   README / レビュー文書の版数記述も訂正（2026-11-18）。
 - [ ] `tests-stage-b-online` — モデル残高回復後に `acp_prompt_probe` を1回実行し、本文非空と stop reason を記録する（G5）。
@@ -102,10 +103,12 @@ verified:
 
 - [x] `acp-caret-pin` — agent-client-protocol を =0.11.1 に統一。
 - [x] `no-msrv-pin` — rust-toolchain.toml (1.88.0) を追加し実効 MSRV を明記。
-- [ ] `inconsistent-log-stream` — probe の `println!` と GPUI の `eprintln!` を統一（G1）。
+- [x] `inconsistent-log-stream` — emit(stream,line) に集約し、結果は stdout、
+  診断は stderr と明文化（+6テスト、stderr 相関/redact 維持）。
 - [x] `dsh-path-hijack` — DSH_BIN/信頼済み dir から絶対解決し最小 PATH を設定
   （+24テスト）。
-- [ ] `performance-hypotheses` — `chunks.join("")` / 無制限バッファの実測を行い、機能バグか性能課題かを確定（**測定根拠なし** / G1）。
+- [x] `performance-hypotheses` — concat は O(N^2)、増分が3桁以上高速と実測。
+  機能バグではなく性能/DoS 課題と判定（investigation/performance-notes.md）。
 - [ ] `platform-build-unverified` — Windows / macOS ビルドを CI ジョブへ追加する前に gpui feature の明示選択を検討（G1）。
 - [ ] `license-apache-notice-unverified` — gpui / ACP の Apache-2.0 著作権・NOTICE 表示義務の充足を配布物で確認（G3）。
 - [ ] `gitignore-review-artifacts` — `cross-review/` / `investigation/` を `.gitignore` へ追加し、ローカル絶対パスとレビュー log の混入を防ぐ（G6）。
