@@ -12,7 +12,8 @@ use cordis_rs::core_services::{
 };
 use cordis_rs::plugin_ports::{SessionTitleLlm, mount_session_title_llm};
 use gpui::{
-    App, Application, Context as GpuiContext, Render, SharedString, Window, div, prelude::*, rgb,
+    App, Application, AsyncApp, Context as GpuiContext, Entity, Render, SharedString, Window, div,
+    prelude::*, rgb,
 };
 
 struct TitleRow {
@@ -33,58 +34,105 @@ fn init_error_line(error: &str) -> String {
     format!("init error: {error}")
 }
 
-fn build_rows() -> Result<Vec<TitleRow>, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?;
-    runtime.block_on(async {
-        let ctx = Context::root("title-ui");
-        let llm = provide_llm(&ctx).await.map_err(|e| e.to_string())?;
-        let titles: SessionTitles = provide_session_titles(&ctx)
-            .await
-            .map_err(|e| e.to_string())?;
-        let config = TitleProviderConfig::default();
-        mount_session_title_llm(&ctx, config.clone())
-            .await
-            .map_err(|e| e.to_string())?;
+/// Async by itself: the caller is the GPUI executor (`cx.spawn` family), so
+/// this binary no longer builds an ad-hoc Tokio runtime just to initialize the
+/// title services.
+async fn build_rows() -> Result<Vec<TitleRow>, String> {
+    let ctx = Context::root("title-ui");
+    let llm = provide_llm(&ctx).await.map_err(|e| e.to_string())?;
+    let titles: SessionTitles = provide_session_titles(&ctx)
+        .await
+        .map_err(|e| e.to_string())?;
+    let config = TitleProviderConfig::default();
+    mount_session_title_llm(&ctx, config.clone())
+        .await
+        .map_err(|e| e.to_string())?;
 
-        let provider = cordis_rs::core_services::from_async_text(
-            "title-stub",
-            "title-stub-1",
-            |_request: LlmRequest| async { Ok::<_, String>("**Rust Plugin Port**".to_string()) },
-        );
-        let _p = llm.register(provider);
-        llm.set_default("title-stub");
+    let provider = cordis_rs::core_services::from_async_text(
+        "title-stub",
+        "title-stub-1",
+        |_request: LlmRequest| async { Ok::<_, String>("**Rust Plugin Port**".to_string()) },
+    );
+    let _p = llm.register(provider);
+    llm.set_default("title-stub");
 
-        let generator = SessionTitleLlm::new(config.clone());
-        let messages = vec!["How do I port plugins?".to_string()];
-        let _ = generator
-            .generate(&llm, &titles, "s-llm", &messages)
-            .await
-            .map_err(|e| e.to_string())?;
+    let generator = SessionTitleLlm::new(config.clone());
+    let messages = vec!["How do I port plugins?".to_string()];
+    let _ = generator
+        .generate(&llm, &titles, "s-llm", &messages)
+        .await
+        .map_err(|e| e.to_string())?;
 
-        titles.derive_from_messages("s-fallback", &["Greeting and intro".to_string()], 20);
+    titles.derive_from_messages("s-fallback", &["Greeting and intro".to_string()], 20);
 
-        Ok(vec![
-            TitleRow {
-                session_id: "s-llm".to_string(),
-                title: titles.get("s-llm").unwrap_or_default(),
-                source: "llm",
-            },
-            TitleRow {
-                session_id: "s-fallback".to_string(),
-                title: titles.get("s-fallback").unwrap_or_default(),
-                source: "fallback",
-            },
-        ])
-    })
+    Ok(vec![
+        TitleRow {
+            session_id: "s-llm".to_string(),
+            title: titles.get("s-llm").unwrap_or_default(),
+            source: "llm",
+        },
+        TitleRow {
+            session_id: "s-fallback".to_string(),
+            title: titles.get("s-fallback").unwrap_or_default(),
+            source: "fallback",
+        },
+    ])
 }
 
 struct TitlePanel {
     rows: Arc<Vec<TitleRow>>,
     /// `build_rows()` failure, shown in the window instead of empty rows.
     error: Option<SharedString>,
+}
+
+impl TitlePanel {
+    /// Apply the async build result on the UI thread. This is the single
+    /// success/failure branch used by the spawned build task and by tests.
+    fn apply_build_result(&mut self, result: Result<Vec<TitleRow>, String>) {
+        match result {
+            Ok(rows) => {
+                self.rows = Arc::new(rows);
+                self.error = None;
+            }
+            Err(error) => {
+                let message = init_error_line(&error);
+                eprintln!("cordis_title_ui: {message}");
+                self.rows = Arc::new(Vec::new());
+                self.error = Some(SharedString::from(message));
+            }
+        }
+    }
+}
+
+/// Single source for the window-creation log line. The toggle demo uses the
+/// identical helper so both binaries report window setup the same way.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
+/// The one place this binary creates its window; the result is never discarded.
+fn open_panel_window(panel: Entity<TitlePanel>, cx: &mut App) {
+    match cx.open_window(Default::default(), |_window, _cx| panel.clone()) {
+        Ok(_window) => eprintln!("cordis_title_ui: {}", window_log_line(true, "")),
+        Err(error) => eprintln!(
+            "cordis_title_ui: {}",
+            window_log_line(false, &error.to_string())
+        ),
+    }
+}
+
+/// Initialize the title services on the GPUI executor and feed the outcome
+/// back to the panel. Replaces the former temporary Tokio runtime in `main`.
+fn start_build(panel: Entity<TitlePanel>, cx: &mut App) {
+    cx.spawn(async move |app: &mut AsyncApp| {
+        let result = build_rows().await;
+        let _ = panel.update(app, |panel, _cx| panel.apply_build_result(result));
+    })
+    .detach();
 }
 
 impl Render for TitlePanel {
@@ -120,24 +168,13 @@ impl Render for TitlePanel {
 }
 
 fn main() {
-    let (rows, error) = match build_rows() {
-        Ok(rows) => (Arc::new(rows), None),
-        Err(error) => {
-            let message = init_error_line(&error);
-            eprintln!("cordis_title_ui: {message}");
-            (
-                Arc::<Vec<TitleRow>>::new(Vec::new()),
-                Some(SharedString::from(message)),
-            )
-        }
-    };
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| TitlePanel {
-            rows: rows.clone(),
-            error: error.clone(),
+            rows: Arc::new(Vec::new()),
+            error: None,
         });
-        let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
-        eprintln!("cordis_title_ui: GPUI window created");
+        start_build(panel.clone(), cx);
+        open_panel_window(panel, cx);
     });
 }
 
@@ -171,8 +208,40 @@ mod tests {
     }
 
     #[test]
-    fn build_rows_still_provides_both_title_rows() {
-        let rows = build_rows().expect("title demo should build");
+    fn window_log_line_is_shared_and_preserves_messages() {
+        assert_eq!(window_log_line(true, ""), "GPUI window created");
+        assert_eq!(
+            window_log_line(false, "boom"),
+            "failed to create window: boom"
+        );
+    }
+
+    #[test]
+    fn apply_build_result_keeps_rows_or_shows_error() {
+        let mut panel = TitlePanel {
+            rows: Arc::new(Vec::new()),
+            error: None,
+        };
+        panel.apply_build_result(Ok(vec![TitleRow {
+            session_id: "s-llm".to_string(),
+            title: "Rust Plugin Port".to_string(),
+            source: "llm",
+        }]));
+        assert_eq!(panel.rows.len(), 1);
+        assert_eq!(row_label(&panel.rows[0]), "s-llm [llm]: Rust Plugin Port");
+        assert!(panel.error.is_none());
+
+        panel.apply_build_result(Err("boom".to_string()));
+        assert!(panel.rows.is_empty());
+        assert_eq!(
+            panel.error.as_ref().map(|error| error.to_string()),
+            Some(init_error_line("boom"))
+        );
+    }
+
+    #[tokio::test]
+    async fn build_rows_still_provides_both_title_rows() {
+        let rows = build_rows().await.expect("title demo should build");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].session_id, "s-llm");
         assert_eq!(rows[0].source, "llm");

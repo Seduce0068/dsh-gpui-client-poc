@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T16:53:23+09:00"
+  at: "2026-11-18T17:06:11+09:00"
 ---
 
 ## 進行中
@@ -34,7 +34,8 @@ verified:
   config_option_update を描画。usage_update は feature 無効のため無視理由を表示（+8テスト）。
 - [x] `llm-probe-returns-stop-reason` — ACP セッション API
   の本文読取りへ置換し、`Channel::duplex()` で stop_reason 非混入を検証（2026-11-18）。
-- [ ] `prompt-ui-replies-never-filled` — `cordis_prompt_ui` に AgentLoop を接続するか、`cordis_prompt_agent_ui` へ統合して README:21 の説明と実態を一致させる（根拠: `cordis_prompt_ui.rs:41,63-69,128-139` / G7）。
+- [x] `prompt-ui-replies-never-filled` — README / モジュール doc を実体
+  （入力・送信表示のみ、AgentLoop は prompt_agent_ui）へ整合。
 - [x] `errors-not-classified` / `retry-ui-unrelated-to-acp` — 4分類と回復導線を
   表示し、retry デモが ACP 非接続のローカル stub であることを常時明示。
 - [x] `ux-ime-enter` — ImePhase と純粋判定で変換中 Enter の中途送信を防止（2026-11-18）。
@@ -72,7 +73,8 @@ verified:
 
 - [x] `cordis-services-not-provided` — sessions/systemPrompt/goals/compaction
   を provide し with_* を接続（+6テスト）。
-- [ ] `cordis-registry-duplication` / `cordis-execution-models-mixed` — PluginRegistry 登録（8対6の乖離）と window 生成を共通化し、実行モデルを `cx.spawn` 系へ統一する（G6）。
+- [x] `cordis-registry-duplication` / `execution-models-mixed` — window 生成
+  を共通化し block_on を cx.spawn + WeakEntity へ統一（+4テスト）。
 - [x] `session-close-absent` — stdin EOF + timeout wait の graceful shutdown
   を実装。unstable_session_close は仕様不安定のため無効化と判断（+5テスト）。
 - [x] `multi-session-buffer-collision` — session_id キーのバッファ分割と
@@ -85,7 +87,8 @@ verified:
   pid/session_id を相関付与、秘密を redact（+12テスト）。
 - [x] `stream-polling-and-detach-leak` — WeakEntity + CancellationToken +
   Notify 駆動へ置換し、window close でポンプ終了（+4テスト）。
-- [ ] `errors-swallowed` / `assert-in-main-path` — `let _ = save(...)` / `build_rows().unwrap_or_default()` / 本番 `assert_eq!` をエラー表示へ置換（G7）。
+- [x] `errors-swallowed` / `assert-in-main-path` — bridge / todo_ui の
+  説明欠落・projection 未登録をエラー表示へ置換（+6テスト）。
   → 2026-11-18: cordis_title_ui / composition_toggle_ui は解消済み。
 - [x] `tool-fs-unvalidated-path` — host 側で scoped FS(read のみ) を provide し、
   正規化・symlink escape 拒否をテストで固定（上流 resolve の未対応は記録）。
