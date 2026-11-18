@@ -15,7 +15,18 @@
 //!
 //! The `dsh` subprocess stderr is captured through a pipe, redacted, and
 //! rendered with a `[dsh pid=… session=…]` correlation id.
+//!
+//! # 出力契約 (log stream contract)
+//!
+//! 全ての出力は `emit` を通り、行の種別でストリームが決まる。
+//! - `ProbeStream::Stdout`（`println!`）: 通常出力＝パイプ・grep 対象の結果。
+//!   agent loop の step 数と回答本文が該当する。
+//! - `ProbeStream::Stderr`（`eprintln!`）: 診断出力のみ。失敗の class /
+//!   recovery hint、および相関 id 付き・redact 済みの `dsh` stderr。
+//!   `rendered_lines()` の書式と redaction は変更しない契約であり、
+//!   その全行が stderr へ出ることを回帰テストで固定する。
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -30,6 +41,51 @@ use cordis_rs::core_services::{
     AgentLoop, LlmRequest, from_async_text, provide_llm, provide_tools,
 };
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+// ---- Output contract: one routing point for stdout vs stderr -------------
+//
+// `emit` が宛先を一箇所で固定する。テストはスレッドローカルの
+// `OUTPUT_CAPTURE` に差し替えて、グローバルな stdout/stderr を奪わずに
+// 各呼び出し箇所のストリームを検証する（本番は None のまま）。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeStream {
+    Stdout,
+    Stderr,
+}
+
+thread_local! {
+    static OUTPUT_CAPTURE: RefCell<Option<Vec<(ProbeStream, String)>>> =
+        const { RefCell::new(None) };
+}
+
+fn emit(stream: ProbeStream, line: &str) {
+    let captured = OUTPUT_CAPTURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(lines) = slot.as_mut() {
+            lines.push((stream, line.to_string()));
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        match stream {
+            ProbeStream::Stdout => println!("{line}"),
+            ProbeStream::Stderr => eprintln!("{line}"),
+        }
+    }
+}
+
+#[cfg(test)]
+fn start_capture() {
+    OUTPUT_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+fn take_capture() -> Vec<(ProbeStream, String)> {
+    OUTPUT_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default())
+}
 
 // ---- Secure `dsh` launch -------------------------------------------------
 //
@@ -242,8 +298,9 @@ impl DshCorrelation {
         if !self.enabled {
             return;
         }
+        // 相関 id 付きの redact 済み行は診断出力なので stderr 固定。
         for line in self.rendered_lines() {
-            eprintln!("{line}");
+            emit(ProbeStream::Stderr, &line);
         }
     }
 }
@@ -371,6 +428,21 @@ fn format_failure(message: &str) -> String {
     )
 }
 
+/// 失敗の class / recovery hint は診断情報なので stderr へ。
+/// テキストは従来の `eprintln!` と同一（failure exit status も不変）。
+fn report_failure(error: &str) {
+    emit(
+        ProbeStream::Stderr,
+        &format!("acp_llm_probe: {}", format_failure(error)),
+    );
+}
+
+/// step 数と回答本文はパイプ可能な結果なので stdout へ。
+fn report_success(steps: usize, body: &str) {
+    emit(ProbeStream::Stdout, &format!("steps: {steps}"));
+    emit(ProbeStream::Stdout, &format!("acp body: {body}"));
+}
+
 /// Run the ACP handshake and a single prompt over an arbitrary transport,
 /// publishing the negotiated session id to `correlation`.
 ///
@@ -495,12 +567,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Provider/ACP failures reach here as opaque strings. Print the
             // classified recovery hint before exiting; keep returning the
             // original error so the probe's failure exit status is unchanged.
-            eprintln!("acp_llm_probe: {}", format_failure(&error.to_string()));
+            report_failure(&error.to_string());
             return Err(error.into());
         }
     };
-    println!("steps: {}", run.steps.len());
-    println!("acp body: {}", run.final_text);
+    report_success(run.steps.len(), &run.final_text);
     Ok(())
 }
 
@@ -515,8 +586,9 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     use super::{
-        AcpFailureKind, DshCorrelation, acp_prompt_over, acp_prompt_over_with_correlation,
-        format_failure, redact_secrets, spawn_stderr_capture,
+        AcpFailureKind, DshCorrelation, ProbeStream, acp_prompt_over,
+        acp_prompt_over_with_correlation, format_failure, redact_secrets, report_failure,
+        report_success, spawn_stderr_capture, start_capture, take_capture,
     };
 
     const SESSION_ID: &str = "probe-session";
@@ -751,6 +823,72 @@ mod tests {
             *correlation.session_id.lock().unwrap(),
             Some(SESSION_ID.to_string()),
             "the negotiated ACP session id must be correlated"
+        );
+    }
+
+    // ---- 出力契約の回帰テスト（stdout/stderr の使い分け） ----
+
+    /// 相関 id 付き・redact 済みの `dsh` stderr は全行 stderr へ出る。
+    /// `rendered_lines()` の書式と redaction 契約は変更しない。
+    #[test]
+    fn correlated_dsh_stderr_stays_on_stderr_and_is_redacted() {
+        let correlation = DshCorrelation::new(555);
+        correlation.set_session_id("session-x");
+        correlation.record_stderr_line("api_key=sk-hidden".to_string());
+        correlation.record_stderr_line("ordinary line".to_string());
+
+        start_capture();
+        correlation.flush();
+        let lines = take_capture();
+
+        assert_eq!(lines.len(), 2, "every captured line is rendered once");
+        assert!(
+            lines
+                .iter()
+                .all(|(stream, _)| *stream == ProbeStream::Stderr),
+            "correlated diagnostics must never pollute stdout: {lines:?}"
+        );
+        assert_eq!(
+            lines[0],
+            (
+                ProbeStream::Stderr,
+                "[dsh pid=555 session=session-x] api_key=[REDACTED]".to_string()
+            )
+        );
+        assert_eq!(
+            lines[1],
+            (
+                ProbeStream::Stderr,
+                "[dsh pid=555 session=session-x] ordinary line".to_string()
+            )
+        );
+        assert!(!lines[0].1.contains("sk-hidden"), "secret leaked");
+    }
+
+    /// 成功結果は stdout、失敗の recovery hint は stderr（従来の文言を維持）。
+    #[test]
+    fn results_go_to_stdout_and_failure_to_stderr() {
+        start_capture();
+        report_success(3, "the answer");
+        report_failure("Insufficient Balance");
+        let lines = take_capture();
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], (ProbeStream::Stdout, "steps: 3".to_string()));
+        assert_eq!(
+            lines[1],
+            (ProbeStream::Stdout, "acp body: the answer".to_string())
+        );
+        assert_eq!(lines[2].0, ProbeStream::Stderr);
+        assert!(
+            lines[2].1.starts_with("acp_llm_probe: "),
+            "failure prefix changed: {}",
+            lines[2].1
+        );
+        assert!(
+            lines[2].1.contains("[balance/402]") && lines[2].1.contains("recovery: top up"),
+            "classification contract changed: {}",
+            lines[2].1
         );
     }
 
