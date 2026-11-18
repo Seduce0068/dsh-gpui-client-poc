@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T17:32:50+09:00"
+  at: "2026-11-18T17:40:11+09:00"
 ---
 
 ## 進行中
@@ -135,7 +135,8 @@ verified:
 - [x] `stream-prompt-input` — CLI 引数 > 環境変数 > 既定の順で解決し、
   空入力はデフォルトへフォールバック（+5テスト）。
 
-- [ ] `host-pipeline-wiring` 現行 cordis-rs の with_pipeline を cordis_agent_ui へ配線する
+- [x] `host-pipeline-wiring` — ToolPipeline に fail-closed approval を適用し
+  AgentLoop へ with_pipeline で配線（+1テスト、DOM/ACP 契約維持）。
 - [ ] `upstream-approval-guard` 上流 approval.rs の guard drop 修正を適用/反映する
 
 ## 完了
