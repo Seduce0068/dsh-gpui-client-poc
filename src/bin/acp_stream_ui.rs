@@ -18,7 +18,8 @@
 //! leaking it forever.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::{
@@ -32,6 +33,86 @@ use gpui::{
 use tokio::sync::Notify;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
+
+// ---- Secure `dsh` launch -------------------------------------------------
+//
+// Never resolve `dsh` through the ambient `PATH`: a poisoned entry (`.`, a
+// world-writable temp dir, an attacker-controlled bin dir) could substitute a
+// fake `dsh` and capture the ACP stdio traffic. Resolve an absolute path from
+// an explicit override or a fixed allowlist, then give the child a minimal,
+// attacker-independent `PATH`.
+
+/// System dirs safe to expose to `dsh` and its children. `node` for the
+/// `#!/usr/bin/env node` shebang lives in `/usr/bin`.
+const MINIMAL_PATH_DIRS: &[&str] = &["/usr/local/bin", "/usr/bin", "/bin"];
+
+/// Absolute directories searched for `dsh` when `DSH_BIN` is unset.
+/// The ambient `PATH` is intentionally never consulted.
+fn trusted_dsh_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = home.filter(|home| !home.as_os_str().is_empty()) {
+        dirs.push(home.join(".npm-global/bin"));
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".local/share/mise/shims"));
+        dirs.push(home.join("bin"));
+    }
+    dirs.extend(MINIMAL_PATH_DIRS.iter().map(PathBuf::from));
+    dirs
+}
+
+/// Ordered absolute candidates for `dsh`. `DSH_BIN` wins; a relative value is
+/// resolved against `cwd`, so every candidate is absolute.
+fn dsh_candidates(dsh_bin: Option<&Path>, cwd: &Path, search_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(bin) = dsh_bin.filter(|bin| !bin.as_os_str().is_empty()) {
+        candidates.push(if bin.is_absolute() {
+            bin.to_path_buf()
+        } else {
+            cwd.join(bin)
+        });
+    }
+    candidates.extend(search_dirs.iter().map(|dir| dir.join("dsh")));
+    candidates
+}
+
+/// Resolve `dsh` to the first existing absolute candidate.
+fn resolve_dsh_from(
+    dsh_bin: Option<&Path>,
+    cwd: &Path,
+    search_dirs: &[PathBuf],
+) -> Result<PathBuf, String> {
+    dsh_candidates(dsh_bin, cwd, search_dirs)
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            "dsh executable not found in trusted locations; set DSH_BIN to its absolute path"
+                .to_owned()
+        })
+}
+
+/// Minimal `PATH` for the child: the resolved binary's own directory (so
+/// sibling helpers and the `node` shebang resolve) plus fixed system dirs.
+fn minimal_child_path(dsh_path: &Path) -> Result<OsString, String> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = dsh_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        dirs.push(parent.to_path_buf());
+    }
+    dirs.extend(MINIMAL_PATH_DIRS.iter().map(PathBuf::from));
+    std::env::join_paths(&dirs).map_err(|error| format!("cannot build PATH: {error}"))
+}
+
+/// Resolve from the process environment into `(absolute dsh path, child PATH)`.
+fn dsh_command_parts() -> Result<(PathBuf, OsString), String> {
+    let dsh_bin = std::env::var_os("DSH_BIN").map(PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let cwd = std::env::current_dir().map_err(|error| format!("cannot read cwd: {error}"))?;
+    let dsh_path = resolve_dsh_from(dsh_bin.as_deref(), &cwd, &trusted_dsh_dirs(home.as_deref()))?;
+    let child_path = minimal_child_path(&dsh_path)?;
+    Ok((dsh_path, child_path))
+}
 
 /// Prompt sent to the agent when the user supplies no CLI argument or env var.
 const DEFAULT_PROMPT: &str = "Explain this repository in one sentence.";
@@ -321,7 +402,17 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: Str
         runtime.block_on(async move {
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
 
-            let mut cmd = tokio::process::Command::new("dsh");
+            let (dsh_path, child_path) = match dsh_command_parts() {
+                Ok(parts) => parts,
+                Err(error) => {
+                    buffer.lock().expect("stream buffer poisoned").status =
+                        format!("dsh resolution error: {error}");
+                    signal.changed();
+                    return;
+                }
+            };
+            let mut cmd = tokio::process::Command::new(&dsh_path);
+            cmd.env("PATH", child_path);
             cmd.args(["--profile", "acp"])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped());
@@ -767,5 +858,91 @@ mod tests {
             "env prompt"
         );
         assert_eq!(resolve_prompt(&args(&["   "]), Some("   ")), DEFAULT_PROMPT);
+    }
+
+    // ---- Secure `dsh` launch: offline regression tests (no subprocess) ----
+
+    #[test]
+    fn dsh_candidates_prefer_dsh_bin_and_stay_absolute() {
+        let cwd = PathBuf::from("/work");
+        let dirs = vec![PathBuf::from("/trusted/bin")];
+
+        let from_abs = super::dsh_candidates(Some(&PathBuf::from("/opt/dsh")), &cwd, &dirs);
+        assert_eq!(from_abs.first(), Some(&PathBuf::from("/opt/dsh")));
+
+        let from_rel = super::dsh_candidates(Some(&PathBuf::from("local/dsh")), &cwd, &dirs);
+        assert_eq!(from_rel.first(), Some(&PathBuf::from("/work/local/dsh")));
+
+        let from_search = super::dsh_candidates(None, &cwd, &dirs);
+        assert_eq!(from_search, vec![PathBuf::from("/trusted/bin/dsh")]);
+
+        assert!(
+            from_abs
+                .iter()
+                .chain(&from_rel)
+                .chain(&from_search)
+                .all(|path| path.is_absolute())
+        );
+    }
+
+    #[test]
+    fn trusted_dsh_dirs_are_absolute_and_system_backed() {
+        let dirs = super::trusted_dsh_dirs(Some(&PathBuf::from("/home/operator")));
+        assert!(
+            dirs.iter().all(|dir| dir.is_absolute()),
+            "no relative (hijackable) dir: {dirs:?}"
+        );
+        assert!(dirs.iter().any(|dir| dir == &PathBuf::from("/usr/bin")));
+        assert!(
+            dirs.iter()
+                .any(|dir| dir == &PathBuf::from("/home/operator/.npm-global/bin"))
+        );
+        assert!(
+            dirs.iter()
+                .all(|dir| dir != &PathBuf::from(".") && dir != &PathBuf::from("/tmp"))
+        );
+    }
+
+    #[test]
+    fn resolve_dsh_from_picks_existing_file_and_reports_missing() {
+        let tmp = std::env::temp_dir().join(format!("dsh-pathpin-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let fake = tmp.join("dsh");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("write fake dsh");
+
+        let resolved = super::resolve_dsh_from(Some(&fake), &PathBuf::from("/"), &[])
+            .expect("resolve fake dsh");
+        assert_eq!(resolved, fake);
+        assert!(resolved.is_absolute());
+
+        let missing = super::resolve_dsh_from(Some(&tmp.join("absent")), &PathBuf::from("/"), &[]);
+        assert!(missing.is_err(), "missing DSH_BIN must be an error");
+
+        std::fs::remove_dir_all(&tmp).expect("remove temp dir");
+    }
+
+    #[test]
+    fn minimal_child_path_is_fixed_and_keeps_node_discoverable() {
+        let path = super::minimal_child_path(&PathBuf::from("/home/operator/.npm-global/bin/dsh"))
+            .expect("build minimal PATH");
+        let parts: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(
+            parts.first(),
+            Some(&PathBuf::from("/home/operator/.npm-global/bin"))
+        );
+        assert!(
+            parts.iter().any(|part| part == &PathBuf::from("/usr/bin")),
+            "`env node` shebang needs /usr/bin: {parts:?}"
+        );
+        assert!(
+            parts.iter().all(|part| part.is_absolute()),
+            "no empty/relative PATH entry: {parts:?}"
+        );
+        assert!(
+            parts
+                .iter()
+                .all(|part| part != &PathBuf::from("/tmp") && part != &PathBuf::from("."))
+        );
     }
 }

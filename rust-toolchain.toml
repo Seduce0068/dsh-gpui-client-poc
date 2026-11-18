@@ -1,0 +1,7 @@
+# edition = "2024" の MSRV は Rust 1.85.0（2024 edition は 1.85 で安定化）。
+# ただし Cargo.lock の依存グラフは serde_with 3.24.0 / time 0.3.55 / darling 0.24.x が
+# rustc >= 1.88.0 を要求するため、本リポジトリの実効 MSRV は 1.88.0。
+[toolchain]
+channel = "1.88.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

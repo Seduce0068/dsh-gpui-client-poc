@@ -64,7 +64,7 @@ cargo build --release
 `Cargo.toml` の直接依存のうち、依存衝突を避けるため厳密に固定しているのは
 `gpui = "=0.2.2"`, `tokio = "=1.48.0"`, `tokio-util = "=0.7.16"` と
 `agent-client-protocol = "0.11.1"` です。`cordis-rs` は Git tag で固定し、
-現行は `v0.127.0` です。
+現行は `v0.133.0` です。
 
 `libc = 0.2.177` と `mio = 1.1.0` は直接依存として宣言していません。
 `cargo tree --offline -i libc` / `-i mio` で確認したところ、両者は gpui / tokio
@@ -154,7 +154,7 @@ session/prompt は成功し、agent-loop まで到達しています。モデル
 
 `cordis_composition_ui` で `fixtures/text-turn.cordis.yml` を読み込み、
 6つのエントリすべてを fiber として起動して一覧を GUI に表示できます。
-cordis-rs 依存は `Cargo.toml` の Git tag `v0.127.0` に同期済みです。
+cordis-rs 依存は `Cargo.toml` の Git tag `v0.133.0` に同期済みです。
 
 ## 未実装 / 未確認
 
