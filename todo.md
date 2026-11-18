@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T15:00:30+09:00"
+  at: "2026-11-18T15:21:37+09:00"
 ---
 
 ## 進行中
@@ -47,7 +47,8 @@ verified:
 
 - [x] `state-stable-id` — 安定 ID（`user-USER`）ディレクトリを併用し、
   pid 変更後も state を読めるようにした（pid scratch は分離維持）。
-- [ ] `ime-confirmed-text` 変換確定漢字を下書きへ挿入する（今回は中途送信防止のみ／InputHandler 未接続）
+- [x] `ime-confirmed-text` — EntityInputHandler で確定漢字を下書きへ挿入し、
+  preedit は別保持。キー側 Insert を無視して二重挿入を防止（+5テスト）。
 
 ### DSH 調査 ラウンド4-5 による訂正（2026-11-17、既存行は削除せず参考として残す）
 
@@ -70,7 +71,8 @@ verified:
 - [ ] `cordis-services-not-provided` — sessions / systemPrompt / goals / compaction を provide し、AgentLoop の `with_*` オプションを接続する（G6）。
 - [ ] `cordis-registry-duplication` / `cordis-execution-models-mixed` — PluginRegistry 登録（8対6の乖離）と window 生成を共通化し、実行モデルを `cx.spawn` 系へ統一する（G6）。
 - [ ] `session-close-absent` — graceful shutdown を実装。必要な `unstable_session_close` / `unstable_session_model` feature の有効化判断を行う（G7）。
-- [ ] `multi-session-buffer-collision` — `session_id` をキーにしたバッファ分割。現状は単一セッションのため未顕在化（G1）。
+- [x] `multi-session-buffer-collision` — session_id キーのバッファ分割と
+  安定順序のラベル表示を実装（+5テスト）。
 - [ ] `config-hardcoded` / `cwd-fallback-root` — プロンプト、API キー（`sk-demo`）、タイムアウト、preset、cwd を設定/CLI 引数へ集約し、取得失敗時は fail-closed（G4）。
 - [ ] `stderr-and-session-trace-blindspot` — dsh の stderr を捕捉し、`session_id` / PID を相関 ID として UI とログへ出す（G7）。
 - [ ] `stream-polling-and-detach-leak` / `stream-fixed-prompt-no-input` — 100ms ポーリングを `cx.notify()` 駆動へ置換し、タスクをウィンドウライフサイクルへ紐付け。プロンプトを入力可能にする（G1）。**→ DSH r5 真因訂正: `acp_stream_ui.rs:154-170` の `let poll_target = panel.clone()` が **strong Entity** を無限 loop 内へ閉じ込め `.detach()` がハンドルを破棄。gpui 0.2.2 の Entity は App の EntityMap に所属し Window に紐づかないため Window 閉鎖後も `app.update → cx.notify` が届く。修正は WeakEntity + 完了通知でのループ終了 + CancellationToken（`investigation/round-5.md` E-1, E5B-08）。**

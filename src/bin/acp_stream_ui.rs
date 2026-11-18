@@ -1,19 +1,21 @@
 //! GPUI window that renders ACP `session/update` chunks as they arrive.
 //!
 //! The ACP client runs on a background thread and appends rendered lines from
-//! each `session/update` to a shared buffer. A GPUI task polls the buffer and
-//! updates the view, so updates appear live. `AgentMessageChunk(Text)` is still
+//! each `session/update` to a shared buffer keyed by session id, so concurrent
+//! sessions cannot splice their text into one answer. A GPUI task polls the
+//! buffer and updates the view, so updates appear live. `AgentMessageChunk(Text)` is still
 //! appended verbatim (no marker or separator); other DSH update variants get a
 //! labelled line or an explicit ignore reason. With an exhausted model balance
 //! no chunks arrive, but the wiring is exercised and the connection status is
 //! visible.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion, SessionId,
     SessionNotification, SessionUpdate, TextContent,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
@@ -22,10 +24,59 @@ use gpui::{
 };
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+/// One independent transcript per ACP session, plus connection-level status.
+///
+/// A single ACP connection can deliver `session/update` notifications for more
+/// than one `sessionId`. A shared `Vec<String>` lets those sessions splice their
+/// text into one answer, so each session owns its own vector keyed by
+/// `SessionId`. `status` stays global on purpose: runtime/spawn/turn errors are
+/// connection-scoped and are not the text of any one session.
 #[derive(Default)]
 struct StreamBuffer {
-    chunks: Vec<String>,
+    sessions: HashMap<SessionId, Vec<String>>,
     status: String,
+}
+
+impl StreamBuffer {
+    /// Append a rendered line to exactly one session's transcript.
+    fn append_update(&mut self, session_id: &SessionId, line: String) {
+        self.sessions
+            .entry(session_id.clone())
+            .or_default()
+            .push(line);
+    }
+
+    /// Verbatim transcript of one session: no separator is inserted between its
+    /// chunks, preserving the legacy rendering of agent message chunks.
+    fn session_transcript(&self, session_id: &SessionId) -> String {
+        self.sessions
+            .get(session_id)
+            .map(|chunks| chunks.concat())
+            .unwrap_or_default()
+    }
+
+    /// Render every session into the panel's single text area. With one session
+    /// this is the legacy byte-for-byte join; with several, stable labelled
+    /// sections keep their text from reading as one continuous answer.
+    fn render_transcript(&self) -> String {
+        if self.sessions.len() <= 1 {
+            return self
+                .sessions
+                .keys()
+                .next()
+                .map(|session_id| self.session_transcript(session_id))
+                .unwrap_or_default();
+        }
+
+        let mut sessions: Vec<_> = self.sessions.iter().collect();
+        sessions.sort_by_key(|(session_id, _)| session_id.to_string());
+        let mut rendered = String::new();
+        for (session_id, chunks) in sessions {
+            rendered.push_str(&format!("\n[session {session_id}]\n"));
+            rendered.push_str(&chunks.concat());
+        }
+        rendered
+    }
 }
 
 /// Turn one `session/update` into a line for the shared transcript.
@@ -116,7 +167,7 @@ impl Render for StreamPanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut GpuiContext<Self>) -> impl IntoElement {
         let (status, text) = {
             let buffer = self.buffer.lock().expect("stream buffer poisoned");
-            (buffer.status.clone(), buffer.chunks.join(""))
+            (buffer.status.clone(), buffer.render_transcript())
         };
         div()
             .flex()
@@ -143,6 +194,22 @@ impl Render for StreamPanel {
     }
 }
 
+/// Route one ACP notification into its own session's transcript.
+///
+/// `SessionNotification::session_id` is the routing key; the rendered line is
+/// unchanged. Kept out of the callback so the routing is regression-testable
+/// without opening a real ACP connection.
+fn record_notification(buffer: &Mutex<StreamBuffer>, notification: &SessionNotification) {
+    let line = render_update_line(&notification.update);
+    if line.is_empty() {
+        return;
+    }
+    buffer
+        .lock()
+        .expect("stream buffer poisoned")
+        .append_update(&notification.session_id, line);
+}
+
 fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -151,7 +218,8 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                buffer.lock().unwrap().status = format!("runtime error: {error}");
+                buffer.lock().expect("stream buffer poisoned").status =
+                    format!("runtime error: {error}");
                 return;
             }
         };
@@ -166,12 +234,13 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
                 Err(error) => {
-                    buffer.lock().unwrap().status = format!("spawn error: {error}");
+                    buffer.lock().expect("stream buffer poisoned").status =
+                        format!("spawn error: {error}");
                     return;
                 }
             };
             let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-                buffer.lock().unwrap().status = "no stdio".to_string();
+                buffer.lock().expect("stream buffer poisoned").status = "no stdio".to_string();
                 return;
             };
             let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
@@ -184,10 +253,7 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
                     move |notification: SessionNotification, _cx| {
                         let notified = notified.clone();
                         async move {
-                            let line = render_update_line(&notification.update);
-                            if !line.is_empty() {
-                                notified.lock().unwrap().chunks.push(line);
-                            }
+                            record_notification(&notified, &notification);
                             Ok(())
                         }
                     },
@@ -214,7 +280,7 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
                 .await;
 
             {
-                let mut guard = buffer.lock().unwrap();
+                let mut guard = buffer.lock().expect("stream buffer poisoned");
                 guard.status = match result {
                     Ok(reason) => format!("turn finished: {reason}"),
                     Err(error) => format!("turn error: {error}"),
@@ -228,7 +294,7 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
 fn main() {
     let buffer = Arc::new(Mutex::new(StreamBuffer {
         status: "connecting to dsh --profile acp…".to_string(),
-        chunks: Vec::new(),
+        sessions: HashMap::new(),
     }));
     spawn_acp(buffer.clone());
 
@@ -357,6 +423,108 @@ mod tests {
         assert!(
             line.contains("ignored AgentMessageChunk content=image"),
             "{line}"
+        );
+    }
+
+    fn session(id: &str) -> SessionId {
+        SessionId::new(id)
+    }
+
+    fn notification(session_id: &str, update: SessionUpdate) -> SessionNotification {
+        SessionNotification::new(session(session_id), update)
+    }
+
+    /// Regression: notifications for two sessions arriving over one connection
+    /// must never splice into a single transcript. This drives the same
+    /// `record_notification` path that `spawn_acp` uses, including the
+    /// `session_id` routing key.
+    #[test]
+    fn concurrent_sessions_do_not_share_a_transcript() {
+        let buffer = Arc::new(Mutex::new(StreamBuffer::default()));
+
+        record_notification(
+            &buffer,
+            &notification(
+                "session-a",
+                SessionUpdate::AgentMessageChunk(text_chunk("Hello from A: ")),
+            ),
+        );
+        record_notification(
+            &buffer,
+            &notification(
+                "session-b",
+                SessionUpdate::AgentMessageChunk(text_chunk("Bonjour from B")),
+            ),
+        );
+        record_notification(
+            &buffer,
+            &notification(
+                "session-a",
+                SessionUpdate::AgentMessageChunk(text_chunk("done")),
+            ),
+        );
+
+        let guard = buffer.lock().expect("stream buffer poisoned");
+        assert_eq!(guard.sessions.len(), 2);
+        let a = guard.session_transcript(&session("session-a"));
+        let b = guard.session_transcript(&session("session-b"));
+        assert_eq!(a, "Hello from A: done");
+        assert_eq!(b, "Bonjour from B");
+        assert!(!a.contains("Bonjour"), "{a}");
+        assert!(!b.contains("Hello") && !b.contains("done"), "{b}");
+    }
+
+    /// One session still renders exactly as before: the plain chunks are joined
+    /// with no marker or separator inserted.
+    #[test]
+    fn single_session_render_is_legacy_verbatim_join() {
+        let mut buffer = StreamBuffer::default();
+        buffer.append_update(&session("solo"), "Hello ".to_owned());
+        buffer.append_update(&session("solo"), "world".to_owned());
+        assert_eq!(buffer.render_transcript(), "Hello world");
+    }
+
+    #[test]
+    fn empty_buffer_renders_empty_transcript() {
+        assert_eq!(StreamBuffer::default().render_transcript(), "");
+    }
+
+    /// Multi-session rendering uses a stable order so the text area is
+    /// deterministic even though `HashMap` iteration is not.
+    #[test]
+    fn multiple_sessions_render_with_stable_labelled_sections() {
+        let mut buffer = StreamBuffer::default();
+        buffer.append_update(&session("zeta"), "Z".to_owned());
+        buffer.append_update(&session("alpha"), "A".to_owned());
+
+        let rendered = buffer.render_transcript();
+        let alpha = rendered
+            .find("[session alpha]")
+            .expect("alpha session label missing");
+        let zeta = rendered
+            .find("[session zeta]")
+            .expect("zeta session label missing");
+        assert!(alpha < zeta, "{rendered}");
+        assert!(
+            rendered.contains('A') && rendered.contains('Z'),
+            "{rendered}"
+        );
+    }
+
+    /// An update that renders to nothing must not create an empty session.
+    #[test]
+    fn empty_rendered_line_does_not_create_session() {
+        let buffer = Arc::new(Mutex::new(StreamBuffer::default()));
+        record_notification(
+            &buffer,
+            &notification("silent", SessionUpdate::AgentMessageChunk(text_chunk(""))),
+        );
+        assert!(
+            buffer
+                .lock()
+                .expect("stream buffer poisoned")
+                .sessions
+                .is_empty()
         );
     }
 }
