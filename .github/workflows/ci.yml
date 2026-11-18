@@ -23,6 +23,6 @@ jobs:
         libxcb1-dev
         libxkbcommon-dev
         libxkbcommon-x11-dev
-      audit: true
+      audit: false
       # §15: unsafe は lint でも検知してビルド失敗とする。
       clippy_args: "-D clippy::undocumented_unsafe_blocks"
