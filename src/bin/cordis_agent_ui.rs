@@ -127,6 +127,11 @@ impl AgentUiRig {
         let approval = provide_approval(&ctx).await.map_err(|e| e.to_string())?;
         // The gate fails closed: this read-only host authorizes only `read`
         // calls under the scoped root and denies every other action.
+        //
+        // This answerer is registered once at build time and never calls
+        // `add_answerer` / `set_policy` from inside the callback. That keeps
+        // the host outside the read-guard reentrancy hazard in older
+        // cordis-rs releases (fixed upstream in the local fork by 94c277b).
         let approval_calls = Arc::new(AtomicUsize::new(0));
         let seen_calls = approval_calls.clone();
         let _answerer = approval.add_answerer(
