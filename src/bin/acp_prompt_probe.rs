@@ -95,6 +95,17 @@ fn dsh_command_parts() -> Result<(PathBuf, OsString), String> {
     Ok((dsh_path, child_path))
 }
 
+/// CLI arguments for the spawned `dsh`. An optional `--patch` overlay keeps
+/// stage-B provider experiments out of the user's global profile.
+fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
+    let mut args = vec![OsString::from("--profile"), OsString::from("acp")];
+    if let Some(patch) = patch {
+        args.push(OsString::from("--patch"));
+        args.push(patch.to_os_string());
+    }
+    args
+}
+
 /// Mask credential-like values in a subprocess log line.
 ///
 /// A pure function: the redaction policy must be testable without spawning
@@ -309,7 +320,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
-    cmd.args(["--profile", "acp"])
+    // Optional stage-B overlay (e.g. the NVIDIA free-model patch) is injected
+    // without touching the user's global profile. No secret is passed here.
+    let patch = std::env::var_os("DSH_ACP_PATCH").filter(|value| !value.is_empty());
+    cmd.args(dsh_cli_args(patch.as_deref()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -333,6 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -659,6 +674,25 @@ mod tests {
             parts
                 .iter()
                 .all(|part| part != &PathBuf::from("/tmp") && part != &PathBuf::from("."))
+        );
+    }
+
+    #[test]
+    fn patch_overlay_is_added_only_when_requested() {
+        let base = super::dsh_cli_args(None);
+        assert_eq!(
+            base,
+            vec![OsString::from("--profile"), OsString::from("acp")]
+        );
+        let with_patch = super::dsh_cli_args(Some(OsStr::new("/repo/fixtures/acp.patch.yml")));
+        assert_eq!(
+            with_patch,
+            vec![
+                OsString::from("--profile"),
+                OsString::from("acp"),
+                OsString::from("--patch"),
+                OsString::from("/repo/fixtures/acp.patch.yml"),
+            ]
         );
     }
 }

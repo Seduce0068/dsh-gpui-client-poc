@@ -167,6 +167,17 @@ fn dsh_command_parts() -> Result<(PathBuf, OsString), String> {
     Ok((dsh_path, child_path))
 }
 
+/// CLI args for the spawned `dsh`; an optional `--patch` overlay routes the
+/// stage-B probe through the NVIDIA free model without editing global config.
+fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
+    let mut args = vec![OsString::from("--profile"), OsString::from("acp")];
+    if let Some(patch) = patch {
+        args.push(OsString::from("--patch"));
+        args.push(patch.to_os_string());
+    }
+    args
+}
+
 /// Mask credential-like values in a subprocess log line.
 ///
 /// A pure function: the redaction policy must be testable without spawning
@@ -518,7 +529,8 @@ async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
-    cmd.args(["--profile", "acp"])
+    let patch = std::env::var_os("DSH_ACP_PATCH").filter(|value| !value.is_empty());
+    cmd.args(dsh_cli_args(patch.as_deref()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -1036,6 +1048,26 @@ mod tests {
             parts
                 .iter()
                 .all(|part| part != &PathBuf::from("/tmp") && part != &PathBuf::from("."))
+        );
+    }
+
+    #[test]
+    fn patch_overlay_is_added_only_when_requested() {
+        use std::ffi::{OsStr, OsString};
+        let base = super::dsh_cli_args(None);
+        assert_eq!(
+            base,
+            vec![OsString::from("--profile"), OsString::from("acp")]
+        );
+        let with_patch = super::dsh_cli_args(Some(OsStr::new("/repo/fixtures/acp.patch.yml")));
+        assert_eq!(
+            with_patch,
+            vec![
+                OsString::from("--profile"),
+                OsString::from("acp"),
+                OsString::from("--patch"),
+                OsString::from("/repo/fixtures/acp.patch.yml"),
+            ]
         );
     }
 }
