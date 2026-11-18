@@ -19,6 +19,44 @@ use gpui::{
     App, Application, Context as GpuiContext, Render, SharedString, Window, div, prelude::*, rgb,
 };
 
+/// Base directory for persistent state, following the XDG state-home
+/// convention: `$XDG_STATE_HOME` when it is absolute, otherwise
+/// `$HOME/.local/state` (temp dir only as a last resort).
+fn xdg_state_home() -> std::path::PathBuf {
+    if let Some(raw) = std::env::var_os("XDG_STATE_HOME") {
+        let candidate = std::path::PathBuf::from(&raw);
+        if !raw.is_empty() && candidate.is_absolute() {
+            return candidate;
+        }
+    }
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(|home| std::path::PathBuf::from(home).join(".local/state"))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Build a per-process directory beneath `base`. The pid component keeps
+/// concurrent demo runs from sharing and clobbering each other's state.
+fn per_process_state_dir(base: &std::path::Path, app: &str) -> std::path::PathBuf {
+    base.join(app).join(format!("pid-{}", std::process::id()))
+}
+
+/// Resolve and create a state directory under `base`. `create_dir_all` is
+/// idempotent and non-destructive, unlike the old startup wipe that erased
+/// whatever a previous run had written.
+fn prepare_state_dir_at(
+    base: &std::path::Path,
+    app: &str,
+) -> Result<std::path::PathBuf, std::io::Error> {
+    let dir = per_process_state_dir(base, app);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn prepare_state_dir(app: &str) -> Result<std::path::PathBuf, std::io::Error> {
+    prepare_state_dir_at(&xdg_state_home(), app)
+}
+
 struct CompositionPanel {
     lines: Vec<SharedString>,
 }
@@ -51,9 +89,12 @@ impl Render for CompositionPanel {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let state_dir = prepare_state_dir("cordis-composition-ui")?;
+    let home = state_dir.join("home");
+    let sessions = state_dir.join("sessions");
     let yaml = include_str!("../../fixtures/text-turn.cordis.yml");
     let vars = VarTable::new()
-        .with_home_path("/tmp/cordis-gpui")
+        .with_home_path(&home)
         .with_env_value("DSH_SNAPSHOT_FEEDBACK", "1");
     let composition = Composition::parse_with_vars(yaml, &vars)?;
 
@@ -68,12 +109,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = PluginRegistry::new();
     let c = ctx.clone();
     let f = fs.clone();
+    let s = sessions.clone();
     registry.register(
         "@deepseek-ai/dsh-session-persistence-jsonl",
         PluginFactory::new(move |_ctx, _config| {
             let c = c.clone();
+            let s = s.clone();
             async move {
-                mount_session_persistence_jsonl(&c, "/tmp/cordis-gpui/sessions").await?;
+                mount_session_persistence_jsonl(&c, &s).await?;
                 Ok(())
             }
         }),
@@ -200,11 +243,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         report.mounted.len()
     );
 
-    let _ = std::fs::remove_dir_all("/tmp/cordis-gpui");
+    // The per-process state directory is intentionally left in place: no
+    // startup directory wipe, so a run never erases another run's state.
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| CompositionPanel::new(lines.clone()));
         let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
         eprintln!("cordis_composition_ui: GPUI window created");
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_base(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "dsh-composition-state-test-{}-{label}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn state_dir_is_scoped_to_base_and_per_process() {
+        let base = test_base("scope");
+        let dir = per_process_state_dir(&base, "cordis-composition-ui");
+        assert!(dir.starts_with(&base));
+        assert!(dir.ends_with(format!("pid-{}", std::process::id())));
+        assert_eq!(
+            dir.parent().and_then(|p| p.file_name()).unwrap(),
+            "cordis-composition-ui"
+        );
+        assert!(xdg_state_home().is_absolute());
+    }
+
+    #[test]
+    fn prepare_state_dir_keeps_existing_files() {
+        let base = test_base("preserve");
+        let first = prepare_state_dir_at(&base, "cordis-composition-ui").unwrap();
+        let sentinel = first.join("keep-me.txt");
+        std::fs::write(&sentinel, "persist").unwrap();
+
+        let second = prepare_state_dir_at(&base, "cordis-composition-ui").unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            std::fs::read_to_string(second.join("keep-me.txt")).unwrap(),
+            "persist"
+        );
+
+        std::fs::remove_file(&sentinel).unwrap();
+        let _ = std::fs::remove_dir(&second);
+        let _ = std::fs::remove_dir(second.parent().unwrap());
+        let _ = std::fs::remove_dir(&base);
+    }
 }
