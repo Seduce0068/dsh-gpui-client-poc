@@ -108,10 +108,7 @@ verified:
   （investigation/ux-pool-triage.md）。
 - [x] `deps-upstream-4-tags-behind` — cordis-rs は v0.133.0 に同期済み、
   README / レビュー文書の版数記述も訂正（2026-11-18）。
-- [ ] `tests-stage-b-online` — モデル残高回復後に `acp_prompt_probe` を1回実行し、本文非空と stop reason を記録する（G5）。
-  → 2026-11-18 17:52 JST 再確認: GET /user/balance が is_available=false /
-  total_balance=0.00 USD。認証情報は有、ACP ハンドシェイクは成功。
-  ユーザーによるチャージ後に課金送信を実施する必要がある。
+- [x] `tests-stage-b-online` — NVIDIA 無料モデルで ACP 本文非空（`2`）と stop reason（`EndTurn`）を実証（stage-b-nvidia-result.md）。
 
 ### 優先度: 低
 

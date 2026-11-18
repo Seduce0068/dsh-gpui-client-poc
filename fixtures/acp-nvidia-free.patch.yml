@@ -1,0 +1,28 @@
+# ACP stage-B 検証用のローカル overlay。
+# `dsh --profile acp --patch <this file>` でのみ適用し、ユーザーのグローバル
+# プロファイルや DeepSeek 設定は変更しない。
+#
+# NVIDIA_API_KEY はシークレットとして参照のみ行い、このファイルには値を書かない。
+# モデル ID は https://integrate.api.nvidia.com/v1/models の実在 ID から選択。
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      nvidia:
+        api: openai-completions
+        baseURL: https://integrate.api.nvidia.com/v1
+        apiKeyEnv: NVIDIA_API_KEY
+        models:
+          - id: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+            name: nemotron-3-nano-omni
+            contextWindow: 128000
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: nvidia
+    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+# The acp plugin owns its own provider/model selection; override it too.
+- id: acp
+  config:
+    provider: nvidia
+    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
