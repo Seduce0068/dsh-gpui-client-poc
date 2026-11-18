@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T17:21:34+09:00"
+  at: "2026-11-18T17:32:50+09:00"
 ---
 
 ## 進行中
@@ -63,8 +63,10 @@ verified:
   他 probe への展開は acp-permission-other-probes として分離。
 - [x] `stream-update-variants-dropped` — thought / tool_call / tool_call_update /
   config_option_update を描画。usage_update は feature 無効のため無視理由を表示（+8テスト）。
-- [ ] `agent-ui-pipeline-no-gate (DSH r4 真因訂正)` — 真因は `cordis_agent_ui.rs:110` の `let (tools, _)` ではなく **`AgentLoop::run` が `self.tools.invoke()` を直接呼び `ToolPipeline::run` を通らない設計**（cordis-rs `agent_loop.rs:234`）。修正は AgentLoop へ pipeline を注入する API 追加 + host 側 `with_approval`。「stderr 未捕捉で外部送信」は refuted（`shell.rs:136` で piped、UI 表示）。現状 scripted provider で発火しない（根拠: `investigation/round-4.md` B）。
-- [ ] `cordis-approval-guard-reentrancy (DSH r5 新規)` — `ApprovalService::request()` が read guard 保持中に answerer を同期呼び出し（cordis-rs `approval.rs:131-149`、v0.67.0 も同一）。r4 で提案した「mpsc + UI 回答」回避策は UI が `add_answerer`/`set_policy`（write）を呼ぶと RwLock 再入デッドロック。**callback 前に guard を drop する最小修正**が先（根拠: `investigation/round-5.md` E-3）。
+- [x] `agent-ui-pipeline-no-gate` — 現行 cordis-rs に with_pipeline API があることを
+  確認し、上流/host の修正手順を upstream-fix-proposals.md に記録。
+- [x] `cordis-approval-guard-reentrancy` — guard drop の上流最小修正を
+  提案書に記載。host 側回避不可（根拠同上）。
 - [x] `deps-vulnerability-triage` — 到達15/非到達11を特定し、最優先 rmcp
   RUSTSEC-2026-0462 の方針を investigation/dependency-triage.md に記録。
 - [x] `fs-read-errors-abort-before-window` — FilePanel::from_result に集約し、
@@ -107,6 +109,8 @@ verified:
 - [x] `deps-upstream-4-tags-behind` — cordis-rs は v0.133.0 に同期済み、
   README / レビュー文書の版数記述も訂正（2026-11-18）。
 - [ ] `tests-stage-b-online` — モデル残高回復後に `acp_prompt_probe` を1回実行し、本文非空と stop reason を記録する（G5）。
+  → 2026-11-18: 残高 0 USD で実行不能（認証・ACP 接続は健全）。
+  ユーザーによるチャージ後に課金送信を実施する必要がある。
 
 ### 優先度: 低
 
@@ -130,6 +134,9 @@ verified:
 
 - [x] `stream-prompt-input` — CLI 引数 > 環境変数 > 既定の順で解決し、
   空入力はデフォルトへフォールバック（+5テスト）。
+
+- [ ] `host-pipeline-wiring` 現行 cordis-rs の with_pipeline を cordis_agent_ui へ配線する
+- [ ] `upstream-approval-guard` 上流 approval.rs の guard drop 修正を適用/反映する
 
 ## 完了
 
