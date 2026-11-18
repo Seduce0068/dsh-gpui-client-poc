@@ -61,8 +61,8 @@ README:27 に「デモの説明」はあるが「欠陥」は無いことを採�
 | id | title | severity | 統合元 | 妥当性 |
 | --- | --- | --- | --- | --- |
 | `deps-pins-not-in-manifest` | README が必須とする libc/mio ピンが lock のみに存在 | high | A, docs, security, D-5 | `Cargo.toml` に無く `Cargo.lock:3142,3401` にあることを確認 |
-| `deps-readme-version-stale` | README の cordis-rs `v0.29.0` は実 pin `v0.62.0` と5タグ差 | high | docs, D-7, L-04 | `README.md:107` 対 `Cargo.toml:10` を確認 |
-| `deps-upstream-4-tags-behind` | 実 pin `v0.62.0` は最新 `v0.66.0` より4タグ/8コミット遅れ | info | round-4 | GitHub MCP `list_tags` と `compare` で確認 |
+| `deps-readme-version-stale`（解消済み） | 当時 README `v0.29.0` 対 pin `v0.62.0` で5タグ差。現行は README:67,157 と Cargo.toml:10 がともに `v0.133.0` | info | docs, D-7, L-04 | 現行 README / Cargo.toml を確認 |
+| `deps-upstream-4-tags-behind`（陳腐化） | 当時 pin `v0.62.0` は上流 `v0.66.0` より4タグ/8コミット遅れ。現行 pin は `v0.133.0` | info | round-4 | 現行 Cargo.toml:10 と investigation/round-5.md を確認 |
 | `docs-fixture-path-wrong` | `snapshots/sdk/text-turn/cordis.yml` は不存在、実体は `fixtures/` | high | docs, D-13 | 両パスの存在確認済み |
 | `docs-unimplemented-list-stale` | README:112 の「未実装」が README:21,26 と自己矛盾 | high | C, D, docs, D-10 | 直接確認 |
 | `docs-run-examples-incomplete` | 実行例が9件のみ、release/debug パス混在 | medium | docs, D-4 | 直接確認 |
@@ -70,10 +70,11 @@ README:27 に「デモの説明」はあるが「欠陥」は無いことを採�
 | `license-mit-decided` | MIT は判断済み。AGPL デフォルト違反ではない | info | L-01, L-02 | `bbdaddf` / `d70bb23` の履歴で確認 |
 | `license-apache-notice-unverified` | Apache-2.0 依存（gpui, ACP）の NOTICE 同梱は未確認 | low | L-03 | メタデータのみ確認 |
 
-**判定**: 「5タグ遅れ」と「4タグ遅れ」は比較対象が違う
-（README 記述 v0.29.0 → 実 pin v0.62.0 が5タグ、
-実 pin v0.62.0 → 最新 v0.66.0 が4タグ）。
-両方を正しく記録し、片方を却下しない。
+**判定**: 「5タグ遅れ」と「4タグ遅れ」は比較対象が違った
+（当時 README 記述 v0.29.0 → pin v0.62.0 が5タグ、
+pin v0.62.0 → 上流 v0.66.0 が4タグ）。両方を正しく記録し、
+片方を却下しない。2026-11-18 現在は README / Cargo.toml ともに
+`v0.133.0` に同期済みで、いずれの「遅れ」も解消している。
 
 ### G4: /tmp 状態・設定外部化
 
@@ -89,12 +90,14 @@ README:27 に「デモの説明」はあるが「欠陥」は無いことを採�
 
 | id | title | severity | 統合元 | 妥当性 |
 | --- | --- | --- | --- | --- |
-| `tests-6-of-19` | テストは6バイナリのみ、残り13はコンパイルのみ | high | A, r2-test, C-1, D-15, E-18, F-15 | `cargo test --bins` EXIT=0、`#[cfg(test)]` 6文件を確認 |
+| `tests-18-of-19` | 当時テスト6バイナリのみ。現行は18 bin すべてに `#[cfg(test)]` / `#[test]`、残りは `src/main.rs` のみ | info（解消） | A, r2-test, C-1, D-15, E-18, F-15 | `src/bin/*.rs` 18 ファイルすべてに `#[test]` を確認（2026-11-18） |
 | `tests-no-mock-provider` | ACP 本文の検証経路が無い（残高依存） | high | A, r2-02, D-2, A-18 | 既知 |
 | `tests-existing-solutions` | `Channel::duplex()` と cordis `echo_provider` が既存 | info | r2-03, r2-04 | crate 一次情報で確認 |
 | `tests-isolation` | 実 FS / `/tmp` 固定に依存し並列フレーク要因 | medium | r2-05 | 直接確認 |
 
-**分母の確定**: 18 bin + main = 19 バイナリ、テスト6、残り13。
+**分母の確定**: 18 bin + main = 19 バイナリ。現行は 18 bin すべてにテストが
+あり、テストが無いのは `src/main.rs` のみ。
+当時の「テスト6・残り13」は obsolete。
 
 ### G6: cordis-rs 統合の実質
 
@@ -141,7 +144,7 @@ todo の「中」へまとめて登録した。
 | `Command::new("dsh")` の引数インジェクション | **却下** | 引数固定 + ACP JSON |
 | symlink による `remove_dir_all` 誘導 | **却下（推測）** | Rust は symlink 自体を削除。未実行検証 |
 | 「factory の第二引数」 | **用語補正** | クロージャ仮引数 `_config: &Value` が正しい |
-| 「19バイナリ中13にテストが無い」 | **表現修正** | 18 bin + main = 19、テスト6、残り13 |
+| 「19バイナリ中13にテストが無い」 | **現行訂正** | 18 bin + main = 19、現行は18 bin 全てにテスト |
 | 「5タグ遅れ」vs「4タグ遅れ」 | **両方正しい** | 比較対象が異なる（README 記述 → pin / pin → 最新） |
 | 「全て confirmed」（プール A） | **格下げ** | 機能案・typo 推測を含むため `confidence` 定義を統一 |
 | MIT が AGPL デフォルトに反する | **却下** | 初期 LICENSE + d70bb23 の明示的判断の痕跡あり |
@@ -155,8 +158,11 @@ todo の「中」へまとめて登録した。
 
 ## 未確認として残す項目
 
-- ACP の crates.io 最新版、セキュリティアドバイザリ
-  （Web 検索 402 / crates.io fetch 失敗 / `cargo audit` 未実行）。
+- ACP の crates.io 最新版・セキュリティアドバイザリは調査済み
+  （`investigation/round-3.md` C-17: 最新 5.3.0、B-1: `cargo audit`
+  EXIT=1 / 26 件実測、`investigation/dependency-triage.md`: 到達15件・
+  非到達11件）。**「cargo audit 未実行」は誤記**。残る未確認は
+  ACP 5.x と DSH の互換性、tokio 最新版のみ。
 - GPUI `Keystroke` の IME 状態フラグの有無。
 - WAYLAND ネイティブウィンドウの実列挙と目視確認
   （`kdotool` 不在）。

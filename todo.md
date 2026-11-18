@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T16:19:14+09:00"
+  at: "2026-11-18T16:33:00+09:00"
 ---
 
 ## 進行中
@@ -94,20 +94,22 @@ verified:
 - [x] `cordis-bridge-isolated` — 共有 CommandRegistry へ /compact を登録し、
   GPUI 側から registered commands を観測可能に（+2テスト）。
 - [ ] `ux-pool-triage` — `investigation/round-1.md` B セクション43件を取捨選択。候補: セッション CRUD / データモデル / 検索、会話スクロール・コードコピー、入力履歴・ショートカット・キャンセル、キーボードナビゲーション、コントラスト・文字サイズ、AT-SPI 調査（G8）。
-- [ ] `deps-upstream-4-tags-behind` — cordis-rs `v0.66.0` への更新を検討。新 port（`session-title-all-prompts-llm`, `tool-schedule`, `planMode`）と Cargo プロファイル統一を活用できる（G3）。**→ DSH r5 訂正: `Cargo.toml:10` は既に `tag = "v0.67.0"`（commit c29db63）。依存更新は完了、README:107 の `v0.29.0` と本ファイルの記述を v0.67.0 へ同期すること（`investigation/round-5.md` C）。**
+- [x] `deps-upstream-4-tags-behind` — cordis-rs は v0.133.0 に同期済み、
+  README / レビュー文書の版数記述も訂正（2026-11-18）。
 - [ ] `tests-stage-b-online` — モデル残高回復後に `acp_prompt_probe` を1回実行し、本文非空と stop reason を記録する（G5）。
 
 ### 優先度: 低
 
-- [ ] `acp-caret-pin` — `agent-client-protocol = "0.11.1"` を `=0.11.1` に統一（G3）。
-- [ ] `no-msrv-pin` — `rust-toolchain.toml` を追加し、edition 2024 の MSRV を明記（G3）。
+- [x] `acp-caret-pin` — agent-client-protocol を =0.11.1 に統一。
+- [x] `no-msrv-pin` — rust-toolchain.toml (1.88.0) を追加し実効 MSRV を明記。
 - [ ] `inconsistent-log-stream` — probe の `println!` と GPUI の `eprintln!` を統一（G1）。
-- [ ] `dsh-path-hijack` — `Command::new("dsh")` を絶対パス解決 + 最小 PATH に変更（G4）。
+- [x] `dsh-path-hijack` — DSH_BIN/信頼済み dir から絶対解決し最小 PATH を設定
+  （+24テスト）。
 - [ ] `performance-hypotheses` — `chunks.join("")` / 無制限バッファの実測を行い、機能バグか性能課題かを確定（**測定根拠なし** / G1）。
 - [ ] `platform-build-unverified` — Windows / macOS ビルドを CI ジョブへ追加する前に gpui feature の明示選択を検討（G1）。
 - [ ] `license-apache-notice-unverified` — gpui / ACP の Apache-2.0 著作権・NOTICE 表示義務の充足を配布物で確認（G3）。
 - [ ] `gitignore-review-artifacts` — `cross-review/` / `investigation/` を `.gitignore` へ追加し、ローカル絶対パスとレビュー log の混入を防ぐ（G6）。
-- [ ] `correct-prior-pool` — `investigation/round-1.md:181` の「fixture 7エントリ」を6件へ訂正し、テスト分母を「18 bin + main = 19」へ統一（G3 / META-02, META-03）。
+- [x] `correct-prior-pool` — fixture 6件・テスト分母 18bin+main=19 へ訂正。
 - [ ] `external-research-retry` — ACP の crates.io 最新版と RUSTSEC / GitHub Advisory を、利用可能な別経路で再調査（G3）。**→ DSH r5 訂正: `investigation/round-3.md` C-17 で ACP 最新 5.3.0（2026-11-14）、C-8 で gpui/ACP/cordis の advisory 空を確認済み、B-1 で `cargo audit` 実測済み（EXIT=1/26件）。cross-review `final.md:158-159` の「cargo audit 未実行」は誤記。再調査は「ACP 5.x と DSH の互換性」と「tokio 最新版（round-5 で取得失敗）」に限定すること。**
 
 - [x] `stream-prompt-input` — CLI 引数 > 環境変数 > 既定の順で解決し、

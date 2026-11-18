@@ -139,7 +139,13 @@ UX エージェントの優先度: (1) 入力基盤 `ime-japanese`+`clipboard-cu
 
 ## C. 親エージェントの独自確認（Runtime Proof）
 
-- **C-1 baseline-tests-pass-but-sparse** [改善/high/no] `cargo test --bins` は EXIT=0（全テスト成功）。ただし `#[test]` / `mod tests` は `cordis_prompt_agent_ui`, `cordis_todo_ui`, `cordis_composition_toggle_ui`, `cordis_prompt_ui`, `cordis_agent_ui`, `cordis_fs_ui` の **6バイナリのみ**。19バイナリ中13バイナリにテストが無く、特に全 `acp_*` probe と全ストリーミング/描画デモは未検証。
+- **C-1 baseline-tests-pass-but-sparse** [改善/high/no]
+  `cargo test --bins` は EXIT=0（全テスト成功）。分母は
+  18 bin + main = 19 バイナリ（2026-11-18 実測）。当時は
+  `#[test]` / `mod tests` が 6 バイナリのみだったが、現行実装では
+  18 bin すべてに `#[cfg(test)]` / `#[test]` が存在。
+  テストが無いのは `src/main.rs` のみ。
+  「19バイナリ中13バイナリにテストが無い」は obsolete。
 - **C-2 private-design-doc** [調査必要/high/no] 非公開設計資料 `passkey-gateway/docs/dsh-client-gpui-migration-2026-11-16.md` の §5「未確認事項」に、wasm32 ビルド可否、Markdown レンダリング難度の定量評価、Render×Tokio 統合（既知）、ファイル D&D/画像プレビュー/シンタックスハイライトの難度、DSH 公式ロードマップ上のネイティブクライアント想定の有無が列挙されている。§3.1 にはスロット機構再現、`dsh.client` マニフェスト、`cordis-client-runner` のサンドボックス再設計、接続/認証レイヤ再実装（経路3のみ）等のアーキテクチャ課題。§4.1 の「案A（Web 維持 + GPUI 独立ツール）推奨」方針と整合するか検討が必要。
 - **C-3 related-pocs** [調査必要/medium/no] 同一 workspace に `work/gpui-task-manager`, `work/gpui-file-explorer`, `work/dsh-tui`, `work/bitwarden-gpui-poc` が存在。案A（独立 GPUI ツール群）の実績/再利用候補として後 rounds で調査する価値あり。
 
@@ -166,7 +172,9 @@ README:57-64 が「ピン留めが必要」とする `libc=0.2.177`, `mio=1.1.0`
 commit 09453cb で削除済みの `agent-client-protocol-tokio` を、参照先の非公開レポート §4.4 が今も前提にしている。README:60 が「詳細」として誘導している。
 
 ### D-7 `cordis-rs-version-notes-stale` [改善/high/no]
-README:103-107 は `v0.29.0` と記載するが実は Cargo.toml:10 `v0.62.0`。5タグ遅れ（28aa8a0→aacbf9a）。
+README:103-107 は `v0.29.0` と記載していたが、当時 Cargo.toml:10 は
+`v0.62.0`（5タグ遅れ、28aa8a0→aacbf9a）。**2026-11-18 現在は
+README:67,157 と Cargo.toml:10 がともに `v0.133.0` に同期済み**。
 
 ### D-8 `lld-linker-config-removed` [残タスク/medium/no]
 commit d70bb23 が `.cargo/config.toml`（lld + libshim）を削除。非公開レポート §2.3:88 は lld 必須と明記するが CI apt_packages に lld なし。クリーン環境でのビルド再現性に影響し得る（推測含む）。
@@ -178,7 +186,11 @@ commit d70bb23 が `.cargo/config.toml`（lld + libshim）を削除。非公開�
 README:109-113 + 非公開レポート §4.3/§5 は「ストリーミング未着手」とするが、commit 57dbc01/2a60bc7 で listen + GPUI 共有バッファ描画が既に動く。**未実装リストの信頼性低下**。残るのは実データでの検証のみ（D-2 と表裏）。
 
 ### D-11 `fixture-entries-mounted-not-exercised` [機能追加案/high/no]
-`fixtures/text-turn.cordis.yml:16-37` の message-feedback / feedback-producer / session-persistence / tool-subagent は mount 表示のみ。フィードバック送信・永続化ラウンドトリップ・subagent 呼び出しのデモが無い。README「6エントリ」も実数7と不一致。**次の機能デモ候補が明確**。
+`fixtures/text-turn.cordis.yml:16-37` の message-feedback / feedback-producer /
+session-persistence / tool-subagent は mount 表示のみ。フィードバック送信・
+永続化ラウンドトリップ・subagent 呼び出しのデモが無い。
+README:156 の「6エントリ」は実数 6 件と一致（2026-11-18 再確認）。
+**次の機能デモ候補が明確**。
 
 ### D-12 `feedback-producer-js-absent` [調査必要/medium/no]
 fixture:36 が参照する `./feedback-producer.mjs` は repo に存在せず、Rust `mount_feedback_producer` に差し替え済み。実プラグインとの挙動互換性は未検証。
@@ -190,7 +202,8 @@ README:105 は `snapshots/sdk/text-turn/cordis.yml` と記載するが実は `fi
 非公開レポート（実在確認済み、223行）の §3.1:115-125（テーマ/Markdown/i18n/アクセシビリティ/DnD）、§4.1-4.3、§5:204-210（wasm32 可否、Markdown 難度、DnD/画像/ハイライト、DSH ロードマップ）が GitHub に未反映。README「未実装」は §3.1 のごく一部のみ。C-2 と同一（統合）。
 
 ### D-15 `automated-test-coverage-thin` [改善/medium/no]
-`#[cfg(test)]` は 18 bin 中 6 のみ（C-1 と同一）。`[dev-dependencies]` なし、smoke は CI 非対象。回帰検知が弱い。
+`#[cfg(test)]` は現行 18 bin すべてに存在（C-1 と同一。当時は 6 のみ）。
+`[dev-dependencies]` なし、smoke は CI 非対象（GUI 回帰検知は弱いまま）。
 
 docs エージェントの優先度: (1) D-14 非公開資料の未反映判断、(2) D-5 libc/mio ピン不在、(3) D-11 fixture エントリの意味的未活用。
 
@@ -260,7 +273,10 @@ ACP エージェントの優先度: (1) E-7 9バリアントのドロップ、(2
 
 ## F. `r1-cordis-analysis`（cordis-rs 統合深掘り、16項目）
 
-一次情報: cordis-rs v0.62.0（Cargo.lock 固定、commit 22290d9、ローカル checkout `~/.cargo/git/checkouts/cordis-rs-.../22290d9/`）。全12 cordis バイナリ通読 + cordis-rs 実ソース照合。Web 検索不要と判断し未実施。
+一次情報: 当時 cordis-rs v0.62.0（commit 22290d9、ローカル checkout
+`~/.cargo/git/checkouts/cordis-rs-.../22290d9/`）。現行 Cargo.toml:10 は
+`v0.133.0`（2026-11-18）。全12 cordis バイナリ通読 + cordis-rs 実ソース照合。
+Web 検索不要と判断し未実施。
 
 ### F-1 `cordis-command-ports-unmounted` [残タスク/high/no]
 14再利用 port のうち command 系4種（compact/feedback/goal）+ tool 系2種（session_query, working_directory）が一切マウントされず。`provide_commands` は呼ばれるが登録が無く空。cordis-rs 側に実装済みで低コスト。
@@ -305,7 +321,9 @@ message-feedback / session-persistence / subagent / skill-fs は Fiber Active �
 3デモがクリックハンドラで `futures::executor::block_on` と Tokio runtime 生成を混在させ UI をブロック。`#[tokio::main]` 下で futures::block_on は将来 Fiber が Tokio 依存 future を返すとデッドロック化し得る（推測）。`cordis_prompt_agent_ui` は正しく `cx.spawn`。A-17 と同一。
 
 ### F-15 `cordis-tests-only-six-of-twelve` [改善/high/no]
-12 cordis バイナリ中6にしかテストが無く、README:68 は1本（todo_ui）しか記載。テストは data-model 層のみで Render/ボタン/window 生成は未検証。C-1/D-15 と同一。
+当時 12 cordis バイナリ中6にしかテストが無かったが、現行は 12 すべてに
+テストが存在（C-1/D-15 と同一）。README:68 は1本（todo_ui）しか記載。
+テストは data-model 層が中心で Render/ボタン/window 生成は未検証。
 
 ### F-16 `title-titles-in-memory-only` [改善/high/no]
 `cordis_title_ui.rs:24-70,100`。sessionTitles → Vec<TitleRow> に写像するだけ。永続化 service と初回発言で確定する実フローへ未接続、再起動で消える。B-7/E-17 と重複。
