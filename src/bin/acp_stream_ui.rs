@@ -2,17 +2,22 @@
 //!
 //! The ACP client runs on a background thread and appends rendered lines from
 //! each `session/update` to a shared buffer keyed by session id, so concurrent
-//! sessions cannot splice their text into one answer. A GPUI task polls the
-//! buffer and updates the view, so updates appear live. `AgentMessageChunk(Text)` is still
-//! appended verbatim (no marker or separator); other DSH update variants get a
-//! labelled line or an explicit ignore reason. With an exhausted model balance
-//! no chunks arrive, but the wiring is exercised and the connection status is
-//! visible.
+//! sessions cannot splice their text into one answer. A GPUI task waits on a
+//! wake-up signal and calls `cx.notify()` whenever the buffer changes, so
+//! updates appear live without a 100 ms polling loop. `AgentMessageChunk(Text)` is
+//! still appended verbatim (no marker or separator); other DSH update variants
+//! get a labelled line or an explicit ignore reason. With an exhausted model
+//! balance no chunks arrive, but the wiring is exercised and the connection
+//! status is visible.
+//!
+//! Lifetime: the repaint task holds only a `WeakEntity<StreamPanel>`, so it can
+//! never keep the view alive after its window is gone. Closing the window
+//! cancels `StreamSignal::done`, which ends the detached task instead of
+//! leaking it forever.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use agent_client_protocol::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion, SessionId,
@@ -22,7 +27,9 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use gpui::{
     App, Application, Context as GpuiContext, Render, SharedString, Window, div, prelude::*, rgb,
 };
+use tokio::sync::Notify;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use tokio_util::sync::CancellationToken;
 
 /// One independent transcript per ACP session, plus connection-level status.
 ///
@@ -210,7 +217,63 @@ fn record_notification(buffer: &Mutex<StreamBuffer>, notification: &SessionNotif
         .append_update(&notification.session_id, line);
 }
 
-fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
+/// Wake-up and completion channel shared by the ACP producer thread and the
+/// GPUI repaint task.
+///
+/// * `wake` replaces the old 100 ms poll: every buffer mutation calls
+///   `notify_one`, so the repaint task runs exactly when new text exists.
+/// * `done` is the completion notification tied to window lifecycle. Closing
+///   the window cancels it, ending the detached task. The task keeps only a
+///   `WeakEntity`, so neither the view nor the task is leaked.
+#[derive(Clone)]
+struct StreamSignal {
+    wake: Arc<Notify>,
+    done: CancellationToken,
+}
+
+impl Default for StreamSignal {
+    fn default() -> Self {
+        Self {
+            wake: Arc::new(Notify::new()),
+            done: CancellationToken::new(),
+        }
+    }
+}
+
+impl StreamSignal {
+    /// Signal that the shared buffer changed and the view should repaint.
+    fn changed(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Signal completion from the window-close lifecycle hook. Idempotent.
+    fn complete(&self) {
+        self.done.cancel();
+    }
+}
+
+/// Repaint on every buffer change until the owning window completes us.
+///
+/// Deliberately free of GPUI types so the wake/cancel contract is regression
+/// testable with a plain tokio runtime. `on_change` returns `false` when its
+/// weak target no longer resolves; that also ends the pump so a released view
+/// can never strand a live task.
+async fn run_stream_pump(signal: &StreamSignal, mut on_change: impl FnMut() -> bool) {
+    let wake = signal.wake.clone();
+    let done = signal.done.clone();
+    loop {
+        tokio::select! {
+            _ = wake.notified() => {
+                if !on_change() {
+                    break;
+                }
+            }
+            _ = done.cancelled() => break,
+        }
+    }
+}
+
+fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -220,6 +283,7 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
             Err(error) => {
                 buffer.lock().expect("stream buffer poisoned").status =
                     format!("runtime error: {error}");
+                signal.changed();
                 return;
             }
         };
@@ -236,24 +300,29 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
                 Err(error) => {
                     buffer.lock().expect("stream buffer poisoned").status =
                         format!("spawn error: {error}");
+                    signal.changed();
                     return;
                 }
             };
             let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
                 buffer.lock().expect("stream buffer poisoned").status = "no stdio".to_string();
+                signal.changed();
                 return;
             };
             let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
 
             let notified = buffer.clone();
+            let notified_signal = signal.clone();
             let result = Client
                 .builder()
                 .name("cordis-acp-stream-ui")
                 .on_receive_notification(
                     move |notification: SessionNotification, _cx| {
                         let notified = notified.clone();
+                        let signal = notified_signal.clone();
                         async move {
                             record_notification(&notified, &notification);
+                            signal.changed();
                             Ok(())
                         }
                     },
@@ -286,6 +355,7 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>) {
                     Err(error) => format!("turn error: {error}"),
                 };
             }
+            signal.changed();
             let _ = child.kill().await;
         });
     });
@@ -296,33 +366,45 @@ fn main() {
         status: "connecting to dsh --profile acp…".to_string(),
         sessions: HashMap::new(),
     }));
-    spawn_acp(buffer.clone());
+    let signal = StreamSignal::default();
+    spawn_acp(buffer.clone(), signal.clone());
 
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| StreamPanel {
             buffer: buffer.clone(),
         });
-        let poll_target = panel.clone();
-        let poll_buffer = buffer.clone();
-        let timer = cx.background_executor().clone();
-        cx.spawn(async move |app: &mut gpui::AsyncApp| {
-            loop {
-                timer.timer(Duration::from_millis(100)).await;
-                let _ = app.update(|cx| {
-                    poll_target.update(cx, |panel, cx| {
-                        panel.refresh_from(&poll_buffer, cx);
-                    });
-                });
-            }
+
+        // The detached repaint task holds only a weak handle: it can never keep
+        // the view alive after its window is gone.
+        let weak_panel = panel.downgrade();
+        let pump_signal = signal.clone();
+
+        // Window lifecycle owns the completion signal, so closing the window
+        // ends the task instead of leaving an infinite detached task behind.
+        let close_signal = signal.clone();
+        cx.on_window_closed(move |_cx: &mut App| {
+            close_signal.complete();
         })
         .detach();
+
+        cx.spawn(async move |app: &mut gpui::AsyncApp| {
+            run_stream_pump(&pump_signal, || {
+                // A failed weak upgrade is reported as `false`, which stops the
+                // pump. `cx.notify()` in `refresh_from` repaints from the buffer.
+                app.update(|cx| weak_panel.update(cx, |panel, cx| panel.refresh_from(cx)))
+                    .is_ok_and(|result| result.is_ok())
+            })
+            .await;
+        })
+        .detach();
+
         let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
         eprintln!("acp_stream_ui: GPUI window created");
     });
 }
 
 impl StreamPanel {
-    fn refresh_from(&mut self, _buffer: &Arc<Mutex<StreamBuffer>>, cx: &mut GpuiContext<Self>) {
+    fn refresh_from(&mut self, cx: &mut GpuiContext<Self>) {
         // The Render impl reads the shared buffer each frame, so a notify is
         // sufficient to repaint with the latest chunks.
         cx.notify();
@@ -336,6 +418,8 @@ mod tests {
         ConfigOptionUpdate, ContentChunk, TextContent, ToolCall, ToolCallStatus, ToolCallUpdate,
         ToolCallUpdateFields,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn text_chunk(text: &str) -> ContentChunk {
         ContentChunk::new(ContentBlock::Text(TextContent::new(text.to_string())))
@@ -526,5 +610,75 @@ mod tests {
                 .sessions
                 .is_empty()
         );
+    }
+
+    /// Regression: a buffer change wakes the repaint closure without any timer,
+    /// and the window-close completion ends the detached pump. Together these
+    /// replace the old 100 ms infinite poll that leaked a strong `Entity`.
+    #[tokio::test]
+    async fn pump_repaints_on_change_and_stops_on_completion() {
+        let signal = StreamSignal::default();
+        let repaints = Arc::new(AtomicUsize::new(0));
+
+        let pump_signal = signal.clone();
+        let pump_repaints = repaints.clone();
+        let pump = tokio::spawn(async move {
+            run_stream_pump(&pump_signal, || {
+                pump_repaints.fetch_add(1, Ordering::SeqCst);
+                true
+            })
+            .await;
+        });
+
+        // Producer-side changes collapse into at least one repaint; no clock is
+        // involved, so this can only happen through `Notify::notify_one`.
+        signal.changed();
+        signal.changed();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(repaints.load(Ordering::SeqCst) >= 1);
+
+        // Simulate the window-close hook firing.
+        signal.complete();
+        tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("pump must terminate when the window completes it")
+            .expect("pump task must not panic");
+    }
+
+    /// The completion notification is idempotent (several lifecycle hooks may
+    /// fire) and must not itself count as a buffer-change wake-up.
+    #[test]
+    fn completion_is_idempotent_and_independent_of_change() {
+        let signal = StreamSignal::default();
+        assert!(!signal.done.is_cancelled());
+        signal.complete();
+        signal.complete();
+        assert!(signal.done.is_cancelled());
+    }
+
+    /// A pump started after the window already completed exits immediately, so
+    /// a late-scheduled task cannot outlive its window.
+    #[tokio::test]
+    async fn pump_started_after_completion_exits_immediately() {
+        let signal = StreamSignal::default();
+        signal.complete();
+        tokio::time::timeout(Duration::from_secs(1), run_stream_pump(&signal, || true))
+            .await
+            .expect("pump should return immediately when already completed");
+    }
+
+    /// When the weak target no longer resolves (`on_change` returns `false`),
+    /// the pump stops on its own instead of spinning on further notifications.
+    #[tokio::test]
+    async fn pump_stops_when_weak_target_is_gone() {
+        let signal = StreamSignal::default();
+        let pump_signal = signal.clone();
+        let pump = tokio::spawn(async move { run_stream_pump(&pump_signal, || false).await });
+
+        signal.changed();
+        tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("pump must stop when its weak target no longer resolves")
+            .expect("pump task must not panic");
     }
 }

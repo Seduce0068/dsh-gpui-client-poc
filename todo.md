@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T15:21:37+09:00"
+  at: "2026-11-18T15:35:14+09:00"
 ---
 
 ## 進行中
@@ -43,6 +43,7 @@ verified:
 - [x] `deps-and-docs-stale` — cordis-rs 表記を現行 tag v0.127.0 へ同期、
   fixture パスと未実装リストを実体へ更新。libc / mio は推移依存のため直接追加せず。
 - [ ] `tests-6-of-19` / `tests-no-mock-provider` — 19バイナリ中13の未検証を解消。まず `Channel::duplex()` + cordis `echo_provider` でオフライン本文検証を追加し、残高回復後に `acp_prompt_probe` で本文非空を確認する（根拠: `cargo test --bins` EXIT=0 だが6ファイルのみ / G5）。
+  → 2026-11-18: acp_prompt_probe / acp_stream_probe にも duplex テストを追加（進捗）。
 - [ ] `ci-gates-missing` — 共通 workflow `rust-gates.yml@v1` に `-D clippy::undocumented_unsafe_blocks` と `audit: true` を追加（提供側を先に検討）。現状は clippy `-D warnings` のみで cargo audit は未実行（根拠: raw.githubusercontent.com の v1 定義 / G3）。
 
 - [x] `state-stable-id` — 安定 ID（`user-USER`）ディレクトリを併用し、
@@ -75,8 +76,10 @@ verified:
   安定順序のラベル表示を実装（+5テスト）。
 - [ ] `config-hardcoded` / `cwd-fallback-root` — プロンプト、API キー（`sk-demo`）、タイムアウト、preset、cwd を設定/CLI 引数へ集約し、取得失敗時は fail-closed（G4）。
 - [ ] `stderr-and-session-trace-blindspot` — dsh の stderr を捕捉し、`session_id` / PID を相関 ID として UI とログへ出す（G7）。
-- [ ] `stream-polling-and-detach-leak` / `stream-fixed-prompt-no-input` — 100ms ポーリングを `cx.notify()` 駆動へ置換し、タスクをウィンドウライフサイクルへ紐付け。プロンプトを入力可能にする（G1）。**→ DSH r5 真因訂正: `acp_stream_ui.rs:154-170` の `let poll_target = panel.clone()` が **strong Entity** を無限 loop 内へ閉じ込め `.detach()` がハンドルを破棄。gpui 0.2.2 の Entity は App の EntityMap に所属し Window に紐づかないため Window 閉鎖後も `app.update → cx.notify` が届く。修正は WeakEntity + 完了通知でのループ終了 + CancellationToken（`investigation/round-5.md` E-1, E5B-08）。**
+- [x] `stream-polling-and-detach-leak` — WeakEntity + CancellationToken +
+  Notify 駆動へ置換し、window close でポンプ終了（+4テスト）。
 - [ ] `errors-swallowed` / `assert-in-main-path` — `let _ = save(...)` / `build_rows().unwrap_or_default()` / 本番 `assert_eq!` をエラー表示へ置換（G7）。
+  → 2026-11-18: cordis_title_ui / composition_toggle_ui は解消済み。
 - [ ] `tool-fs-unvalidated-path` — パスの正規化・許可ルート制限・symlink 解決を追加し、`ToolFsConfig` を read のみへ絞る（G2）。
 - [ ] `tests-isolation` — `temp_dir()` 実 FS と `/tmp` 固定パス依存を排除し、並列 `cargo test` のフレーク要因を除去（G5）。
 - [ ] `cordis-bridge-isolated` — `cordis_bridge` の独自 `Commands` を `core_services::provide_commands` へ載せ、GPUI 側から `/compact` 登録状態を表示可能にする（G6）。
@@ -96,6 +99,8 @@ verified:
 - [ ] `gitignore-review-artifacts` — `cross-review/` / `investigation/` を `.gitignore` へ追加し、ローカル絶対パスとレビュー log の混入を防ぐ（G6）。
 - [ ] `correct-prior-pool` — `investigation/round-1.md:181` の「fixture 7エントリ」を6件へ訂正し、テスト分母を「18 bin + main = 19」へ統一（G3 / META-02, META-03）。
 - [ ] `external-research-retry` — ACP の crates.io 最新版と RUSTSEC / GitHub Advisory を、利用可能な別経路で再調査（G3）。**→ DSH r5 訂正: `investigation/round-3.md` C-17 で ACP 最新 5.3.0（2026-11-14）、C-8 で gpui/ACP/cordis の advisory 空を確認済み、B-1 で `cargo audit` 実測済み（EXIT=1/26件）。cross-review `final.md:158-159` の「cargo audit 未実行」は誤記。再調査は「ACP 5.x と DSH の互換性」と「tokio 最新版（round-5 で取得失敗）」に限定すること。**
+
+- [ ] `stream-prompt-input` acp_stream_ui の固定プロンプトを入力可能にする（detach 修正後に分離）
 
 ## 完了
 
