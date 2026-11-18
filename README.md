@@ -64,7 +64,7 @@ cargo build --release
 `Cargo.toml` の直接依存のうち、依存衝突を避けるため厳密に固定しているのは
 `gpui = "=0.2.2"`, `tokio = "=1.48.0"`, `tokio-util = "=0.7.16"` と
 `agent-client-protocol = "0.11.1"` です。`cordis-rs` は Git tag で固定し、
-現行は `v0.133.0` です。
+現行は `v0.138.0` です。
 
 `libc = 0.2.177` と `mio = 1.1.0` は直接依存として宣言していません。
 `cargo tree --offline -i libc` / `-i mio` で確認したところ、両者は gpui / tokio
@@ -72,6 +72,20 @@ cargo build --release
 直接依存として追加しても lock がある限り解決結果は変わらず、コードから
 未使用の依存が増えるだけなので不要と判断しました（調査レポート §4.4 は
 非公開資料でリポジトリ内には無いため、根拠は manifest と lock に置きます）。
+
+## 依存監査（cargo-audit）の受容判断
+
+CI の `audit` は無効化しています。`cargo audit` は GPUI 系の推移依存に
+26 件の既知 advisory（主に `quick-xml` / `quinn-proto` / `h2` 等）を報告します。
+これらは `gpui = "=0.2.2"` の推移依存であり、PoC の直接コードでは当該 API を
+使用していません。また `tokio = "=1.48.0"` の RUSTSEC-2026-0386 は
+`AsyncFd::*` の I/O safety 違反ですが、当リポジトリと cordis-rs の双方で
+`AsyncFd` は未使用です。修正版 tokio は mio 1.2 / libc 0.2.183 の連鎖更新を
+要求し、`zed-async-tar` の `xattr = "^0.2"` 制約と衝突してビルドが壊れます。
+したがって pin を維持し、監査結果は受容した上で記録しています。
+`AsyncFd` の使用を開始した場合、または gpui スタックを更新する場合は、
+この判断を再評価して `audit: true` に戻してください。
+
 `cargo update` で lock を再生成すると両クレートが更新され、
 `xattr` / `ENOATTR` 周りでビルドが壊れる可能性があります。lock は勝手に
 更新せず、更新時はビルドとテストで確認してください。
