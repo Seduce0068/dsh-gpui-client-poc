@@ -15,10 +15,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cordis_rs::Context;
 use cordis_rs::core_services::{
-    AgentLoop, AgentRun, CompactionEngine, FileSystem, GoalStore, LlmProvider, LlmService,
-    PromptSection, Session, StreamChunk, SystemPrompt, ToolCall, ToolRegistry, provide_compaction,
-    provide_goals, provide_jobs, provide_llm, provide_sessions, provide_shell,
-    provide_system_prompt, provide_token_meter, provide_tools,
+    AgentLoop, AgentRun, ApprovalDecision, ApprovalService, CompactionEngine, FileSystem,
+    GoalStore, LlmProvider, LlmService, PromptSection, Session, StreamChunk, SystemPrompt,
+    ToolCall, ToolPipeline, ToolRegistry, provide_approval, provide_compaction, provide_goals,
+    provide_jobs, provide_llm, provide_sessions, provide_shell, provide_system_prompt,
+    provide_token_meter, provide_tools,
 };
 use cordis_rs::plugin_ports::{ToolBashConfig, ToolFsConfig, mount_tool_bash, mount_tool_fs};
 use gpui::{
@@ -89,14 +90,19 @@ struct AgentUiRig {
     session: Session,
     llm: LlmService,
     tools: ToolRegistry,
+    pipeline: ToolPipeline,
+    approval: ApprovalService,
+    approval_calls: Arc<AtomicUsize>,
     agent: Arc<AgentLoop>,
 }
 
 /// Single source of truth for the loop's `with_*` wiring, shared by main and
-/// the regression tests.
+/// the regression tests. The pipeline is the one returned by `provide_tools`
+/// with the approval gate installed by the host.
 fn wire_agent_loop(
     llm: LlmService,
     tools: ToolRegistry,
+    pipeline: ToolPipeline,
     session: Session,
     prompt: SystemPrompt,
     goals: GoalStore,
@@ -106,6 +112,7 @@ fn wire_agent_loop(
         AgentLoop::new(llm, tools)
             .with_max_steps(4)
             .with_call_parser(Arc::new(parse_calls))
+            .with_pipeline(pipeline)
             .with_session(session)
             .with_system_prompt(prompt)
             .with_goals(goals)
@@ -116,7 +123,25 @@ fn wire_agent_loop(
 impl AgentUiRig {
     async fn build() -> Result<Self, String> {
         let ctx = Context::root("gpui-agent-ui");
-        let (tools, _) = provide_tools(&ctx).await.map_err(|e| e.to_string())?;
+        let (tools, pipeline) = provide_tools(&ctx).await.map_err(|e| e.to_string())?;
+        let approval = provide_approval(&ctx).await.map_err(|e| e.to_string())?;
+        // The gate fails closed: this read-only host authorizes only `read`
+        // calls under the scoped root and denies every other action.
+        let approval_calls = Arc::new(AtomicUsize::new(0));
+        let seen_calls = approval_calls.clone();
+        let _answerer = approval.add_answerer(
+            "cordis-agent-ui-read-only",
+            Arc::new(move |request| {
+                seen_calls.fetch_add(1, Ordering::SeqCst);
+                if request.action == "tool:read" {
+                    Some(ApprovalDecision::Allow)
+                } else {
+                    Some(ApprovalDecision::Deny)
+                }
+            }),
+        );
+        pipeline.with_approval(approval.clone());
+
         let fs = FileSystem::scoped(scoped_fs_root().map_err(|e| e.to_string())?);
         // Pre-provide the scoped filesystem so `mount_tool_fs` reuses it
         // instead of installing its own unrooted `FileSystem::local`.
@@ -163,6 +188,7 @@ impl AgentUiRig {
         let agent = wire_agent_loop(
             llm.clone(),
             tools.clone(),
+            pipeline.clone(),
             session.clone(),
             prompt,
             goals,
@@ -173,6 +199,9 @@ impl AgentUiRig {
             session,
             llm,
             tools,
+            pipeline,
+            approval,
+            approval_calls,
             agent,
         })
     }
@@ -254,8 +283,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use cordis_rs::core_services::{
-        CompactionConfig, LlmRequest, SessionStore, TokenMeter, ToolError, ToolExecContext,
+        CompactionConfig, LlmRequest, SessionStore, TokenMeter, ToolDefinition, ToolError,
+        ToolExecContext, ToolOutput,
     };
+    use cordis_rs::events::BoxFuture;
 
     #[tokio::test]
     async fn scripted_agent_runs_and_renders_steps() {
@@ -287,12 +318,86 @@ mod tests {
         );
     }
 
+    /// Regression: the `ToolPipeline` returned by `provide_tools` is retained,
+    /// gated by approval, and actually used by `wire_agent_loop`. Both scripted
+    /// `read` calls must reach the host answerer; a non-allowed action is
+    /// denied before its tool body runs. The DOM rendering contract is intact.
+    #[tokio::test]
+    async fn scripted_tool_calls_pass_through_the_approval_pipeline() {
+        let rig = AgentUiRig::build().await.unwrap();
+        assert!(
+            rig.approval
+                .answerer_names()
+                .iter()
+                .any(|name| name == "cordis-agent-ui-read-only")
+        );
+
+        // Probe tool: if a denied call ever reached the body, this counter moves.
+        let body_ran = Arc::new(AtomicUsize::new(0));
+        let seen = body_ran.clone();
+        let _probe = rig.tools.register(ToolDefinition::new(
+            "bash",
+            "probe",
+            Arc::new(move |_args, _exec| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(ToolOutput::text("unexpected")) })
+                    as BoxFuture<'static, Result<ToolOutput, ToolError>>
+            }),
+        ));
+
+        let run = rig.agent.run("test").await.unwrap();
+        assert_eq!(run.steps.len(), 3);
+        assert_eq!(run.final_text, "DONE");
+        // Two scripted `read` calls, each answered by the host answerer.
+        assert_eq!(rig.approval_calls.load(Ordering::SeqCst), 2);
+        let results: Vec<_> = run
+            .steps
+            .iter()
+            .flat_map(|step| step.tool_results.iter())
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|result| result.as_ref().is_ok_and(|output| !output.is_error()))
+        );
+
+        // The same retained pipeline denies `tool:bash` before invoking it.
+        let denied = rig
+            .pipeline
+            .run(
+                &rig.tools,
+                "bash",
+                serde_json::json!({}),
+                ToolExecContext::anonymous(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&denied, ToolError::Execution(msg) if msg.contains("denied by approval policy")),
+            "unexpected error: {denied}"
+        );
+        assert_eq!(body_ran.load(Ordering::SeqCst), 0);
+        assert_eq!(rig.approval_calls.load(Ordering::SeqCst), 3);
+
+        // DOM contract: header + three steps + two results + final line.
+        let panel = AgentPanel::from_run(&run);
+        assert_eq!(panel.lines.len(), 7);
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("final: DONE"))
+        );
+    }
+
     /// Regression: the four services are on the context and the scripted run
     /// logs its turn and tool steps to the provided session.
     #[tokio::test]
     async fn shared_services_are_provided_and_turn_is_logged() {
         let rig = AgentUiRig::build().await.unwrap();
         assert!(rig.ctx.get::<SessionStore>("sessions").is_some());
+        assert!(rig.ctx.get::<ApprovalService>("approval").is_some());
         assert!(rig.ctx.get::<SystemPrompt>("systemPrompt").is_some());
         assert!(rig.ctx.get::<GoalStore>("goals").is_some());
         assert!(rig.ctx.get::<CompactionEngine>("compaction").is_some());
@@ -376,6 +481,7 @@ mod tests {
         let agent = wire_agent_loop(
             rig.llm.clone(),
             rig.tools.clone(),
+            rig.pipeline.clone(),
             rig.session.clone(),
             rig.ctx
                 .get::<SystemPrompt>("systemPrompt")
