@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T14:32:52+09:00"
+  at: "2026-11-18T14:46:56+09:00"
 ---
 
 ## 進行中
@@ -33,15 +33,18 @@ verified:
 - [x] `llm-probe-returns-stop-reason` — ACP セッション API
   の本文読取りへ置換し、`Channel::duplex()` で stop_reason 非混入を検証（2026-11-18）。
 - [ ] `prompt-ui-replies-never-filled` — `cordis_prompt_ui` に AgentLoop を接続するか、`cordis_prompt_agent_ui` へ統合して README:21 の説明と実態を一致させる（根拠: `cordis_prompt_ui.rs:41,63-69,128-139` / G7）。
-- [ ] `errors-not-classified` / `retry-ui-unrelated-to-acp` — 残高 / 429 / 認証切れ / 切断を分類して回復導線を表示。retry デモが ACP と無関係であることを README に明記する（根拠: `acp_llm_probe.rs:56`, `cordis_retry_ui.rs:35-60` / G7）。
+- [x] `errors-not-classified` / `retry-ui-unrelated-to-acp` — 4分類と回復導線を
+  表示し、retry デモが ACP 非接続のローカル stub であることを常時明示。
 - [x] `ux-ime-enter` — ImePhase と純粋判定で変換中 Enter の中途送信を防止（2026-11-18）。
 - [x] `cordis-config-discarded` / `disabled-bypassed` / `failed-report-ignored` —
   factory で YAML config を適用し、enabled_with と failed 描画を実装（+5テスト）。
-- [ ] `deps-and-docs-stale` — README の cordis-rs `v0.29.0` → `v0.62.0`、fixture パス → `fixtures/text-turn.cordis.yml`、「未実装」リストを実体へ同期。`libc =0.2.177` / `mio =1.1.0` を manifest へ明示（根拠: `README.md:60,105,107,109-113`, `Cargo.toml:8-15` / G3）。
+- [x] `deps-and-docs-stale` — cordis-rs 表記を現行 tag v0.127.0 へ同期、
+  fixture パスと未実装リストを実体へ更新。libc / mio は推移依存のため直接追加せず。
 - [ ] `tests-6-of-19` / `tests-no-mock-provider` — 19バイナリ中13の未検証を解消。まず `Channel::duplex()` + cordis `echo_provider` でオフライン本文検証を追加し、残高回復後に `acp_prompt_probe` で本文非空を確認する（根拠: `cargo test --bins` EXIT=0 だが6ファイルのみ / G5）。
 - [ ] `ci-gates-missing` — 共通 workflow `rust-gates.yml@v1` に `-D clippy::undocumented_unsafe_blocks` と `audit: true` を追加（提供側を先に検討）。現状は clippy `-D warnings` のみで cargo audit は未実行（根拠: raw.githubusercontent.com の v1 定義 / G3）。
 
-- [ ] `state-stable-id` プロセス固有 state dir では再起動時に旧 state が読まれないため、安定 ID との併用を検討する
+- [x] `state-stable-id` — 安定 ID（`user-USER`）ディレクトリを併用し、
+  pid 変更後も state を読めるようにした（pid scratch は分離維持）。
 - [ ] `ime-confirmed-text` 変換確定漢字を下書きへ挿入する（今回は中途送信防止のみ／InputHandler 未接続）
 
 ### DSH 調査 ラウンド4-5 による訂正（2026-11-17、既存行は削除せず参考として残す）
@@ -55,7 +58,8 @@ verified:
   4種の読取失敗でもウィンドウを開き render で理由を表示（+5テスト）。
 - [x] `state-json-corruption-and-silent-save-failure` — 破損 JSON の警告と保存失敗の
   stderr/UI 可視化を追加（既定値フォールバック自体は維持）。
-- [ ] `deps-and-docs-stale (DSH r5 訂正)` — 上の既存行の `v0.62.0` は陳腐化。`Cargo.toml:10` は既に **`tag = "v0.67.0"`**（commit c29db63）。README:107 の `v0.29.0` を v0.67.0 へ同期すること（根拠: `investigation/round-5.md` C / AUDIT `cordis-version-triple-mismatch`）。
+- [x] `deps-and-docs-stale` — cordis-rs 表記を現行 tag v0.127.0 へ同期、
+  fixture パスと未実装リストを実体へ更新。libc / mio は推移依存のため直接追加せず。
 
 ### 優先度: 中
 
