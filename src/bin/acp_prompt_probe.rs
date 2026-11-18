@@ -1,5 +1,9 @@
 //! Probe: send a real prompt through the ACP client to `dsh --profile acp`.
 //! Requires a working model provider configuration in the ambient environment.
+//!
+//! The `dsh` subprocess stderr is captured through a pipe, redacted, and
+//! rendered with a `[dsh pid=… session=…]` correlation id. Both the drain and
+//! the redaction policy are regression-tested offline.
 
 use agent_client_protocol::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion, StopReason,
@@ -7,17 +11,170 @@ use agent_client_protocol::schema::{
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-/// Send one prompt on a fresh ACP session over an arbitrary transport.
+/// Mask credential-like values in a subprocess log line.
 ///
-/// The `dsh` subprocess transport and the offline `Channel::duplex()` tests
-/// share this path, so the prompt seam can be exercised without a model
-/// provider or credentials.
-async fn prompt_over(
+/// A pure function: the redaction policy must be testable without spawning
+/// `dsh` or touching the ambient environment.
+fn redact_secrets(line: &str) -> String {
+    const SECRET_KEYS: &[&str] = &[
+        "api_key",
+        "api-key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+        "credential",
+    ];
+    let mut out = String::with_capacity(line.len());
+    let mut tokens = line.split_whitespace().peekable();
+    while let Some(token) = tokens.next() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let lower = token.to_ascii_lowercase();
+        // `Bearer <token>` / `Authorization: Bearer <token>`.
+        if lower == "bearer" && tokens.peek().is_some() {
+            let _ = tokens.next();
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        let mut masked = false;
+        for sep in ['=', ':'] {
+            if let Some((key, _value)) = token.split_once(sep) {
+                let key = key.trim_start_matches(['?', '&', '(', '[']);
+                if SECRET_KEYS
+                    .iter()
+                    .any(|candidate| key.eq_ignore_ascii_case(candidate))
+                {
+                    out.push_str(key);
+                    out.push(sep);
+                    out.push_str("[REDACTED]");
+                    masked = true;
+                    break;
+                }
+            }
+        }
+        if masked {
+            continue;
+        }
+        // Bare provider keys and AWS access key ids.
+        if lower.starts_with("sk-") || lower.starts_with("ghp_") || lower.starts_with("gho_") {
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        if token.len() == 20 && token.as_bytes().starts_with(b"AKIA") {
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        out.push_str(token);
+    }
+    out
+}
+
+/// Correlation context shared by the stderr drain and the ACP handshake.
+///
+/// `Clone` shares the same state: the handshake publishes the session id while
+/// the stderr drain keeps appending lines.
+#[derive(Clone)]
+struct DshCorrelation {
+    pid: u32,
+    session_id: Arc<Mutex<Option<String>>>,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
+    enabled: bool,
+}
+
+impl DshCorrelation {
+    fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            session_id: Arc::new(Mutex::new(None)),
+            stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            enabled: true,
+        }
+    }
+
+    /// Offline sink used by the transport tests; it never prints.
+    #[cfg(test)]
+    fn offline() -> Self {
+        Self {
+            pid: std::process::id(),
+            session_id: Arc::new(Mutex::new(None)),
+            stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            enabled: false,
+        }
+    }
+
+    fn set_session_id(&self, id: impl Into<String>) {
+        *self.session_id.lock().unwrap() = Some(id.into());
+    }
+
+    fn record_stderr_line(&self, line: String) {
+        self.stderr_lines.lock().unwrap().push(line);
+    }
+
+    /// Render captured stderr with the correlation id and secrets masked.
+    /// Kept separate from `flush` so tests can assert the exact text.
+    fn rendered_lines(&self) -> Vec<String> {
+        let session = self
+            .session_id
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
+        let lines = self.stderr_lines.lock().unwrap();
+        lines
+            .iter()
+            .map(|line| {
+                format!(
+                    "[dsh pid={} session={}] {}",
+                    self.pid,
+                    session,
+                    redact_secrets(line)
+                )
+            })
+            .collect()
+    }
+
+    fn flush(&self) {
+        if !self.enabled {
+            return;
+        }
+        for line in self.rendered_lines() {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// Drain the `dsh` stderr pipe into `correlation` line by line.
+///
+/// Generic over `AsyncRead` so the drain can be regression-tested with an
+/// in-memory duplex stream instead of a real subprocess.
+fn spawn_stderr_capture<R>(stderr: R, correlation: DshCorrelation) -> tokio::task::JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            correlation.record_stderr_line(line);
+        }
+    })
+}
+
+/// Send one prompt on a fresh ACP session over an arbitrary transport,
+/// publishing the negotiated session id to `correlation`.
+async fn prompt_over_with_correlation(
     cwd: PathBuf,
     prompt: String,
     transport: impl ConnectTo<Client> + 'static,
+    correlation: DshCorrelation,
 ) -> Result<StopReason, String> {
     Client
         .builder()
@@ -31,6 +188,7 @@ async fn prompt_over(
                 .send_request(NewSessionRequest::new(cwd))
                 .block_task()
                 .await?;
+            correlation.set_session_id(session.session_id.to_string());
             eprintln!("prompt => {}", prompt);
             let response = connection
                 .send_request(PromptRequest::new(
@@ -46,6 +204,20 @@ async fn prompt_over(
         .map_err(|error| error.to_string())
 }
 
+/// Send one prompt on a fresh ACP session over an arbitrary transport.
+///
+/// The `dsh` subprocess transport and the offline `Channel::duplex()` tests
+/// share this path, so the prompt seam can be exercised without a model
+/// provider or credentials. Test callers keep this signature unchanged.
+#[cfg(test)]
+async fn prompt_over(
+    cwd: PathBuf,
+    prompt: String,
+    transport: impl ConnectTo<Client> + 'static,
+) -> Result<StopReason, String> {
+    prompt_over_with_correlation(cwd, prompt, transport, DshCorrelation::offline()).await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -56,15 +228,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = tokio::process::Command::new("dsh");
     cmd.args(["--profile", "acp"])
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn()?;
+    let correlation = DshCorrelation::new(child.id().ok_or("no pid")?);
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+    let capture = spawn_stderr_capture(stderr, correlation.clone());
     let stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
 
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
-    let _stop_reason = prompt_over(cwd, prompt, transport).await?;
-
+    let result = prompt_over_with_correlation(cwd, prompt, transport, correlation.clone()).await;
     let _ = child.kill().await;
+    // Closing the pipe ends the drain; awaiting it guarantees every captured
+    // line is present before the correlation report is printed.
+    let _ = capture.await;
+    correlation.flush();
+    let _stop_reason = result?;
     Ok(())
 }
 
@@ -79,8 +259,9 @@ mod tests {
         PromptRequest, PromptResponse, SessionId, StopReason,
     };
     use agent_client_protocol::{Agent, Channel};
+    use tokio::io::AsyncWriteExt;
 
-    use super::prompt_over;
+    use super::{DshCorrelation, prompt_over, redact_secrets, spawn_stderr_capture};
 
     const SESSION_ID: &str = "offline-prompt-session";
 
@@ -212,6 +393,87 @@ mod tests {
             first.path().starts_with(std::env::temp_dir()),
             "cwd must live under the temp directory: {}",
             first.path().display()
+        );
+    }
+
+    #[test]
+    fn redaction_masks_credentials_but_keeps_ordinary_text() {
+        assert_eq!(redact_secrets("plain message"), "plain message");
+
+        let masked = redact_secrets("Authorization: Bearer sk-abc123");
+        assert!(!masked.contains("sk-abc123"), "masked: {masked}");
+        assert!(!masked.contains("Bearer sk"), "masked: {masked}");
+
+        let masked = redact_secrets("?token=abcd");
+        assert!(masked.contains("token=[REDACTED]"), "masked: {masked}");
+        assert!(!masked.contains("abcd"), "masked: {masked}");
+
+        let masked = redact_secrets("key AKIAIOSFODNN7EXAMPLE ok");
+        assert!(!masked.contains("AKIA"), "masked: {masked}");
+        assert!(masked.contains("ok"), "masked: {masked}");
+    }
+
+    #[test]
+    fn missing_session_id_uses_placeholder() {
+        let correlation = DshCorrelation::new(7);
+        correlation.record_stderr_line("booting".to_string());
+        assert_eq!(
+            correlation.rendered_lines(),
+            vec!["[dsh pid=7 session=-] booting"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stderr_pipe_is_drained_and_rendered_with_correlation_id() {
+        let correlation = DshCorrelation::new(4242);
+        correlation.set_session_id("offline-session");
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let drain = spawn_stderr_capture(reader, correlation.clone());
+        writer
+            .write_all(b"api_key=sk-secret-value\nordinary line\n")
+            .await
+            .expect("write to in-memory stderr pipe");
+        drop(writer);
+        drain.await.expect("stderr drain task should finish");
+
+        let rendered = correlation.rendered_lines();
+        assert_eq!(rendered.len(), 2, "every stderr line is rendered");
+        assert!(
+            rendered[0].starts_with("[dsh pid=4242 session=offline-session]"),
+            "correlation id must lead the line: {}",
+            rendered[0]
+        );
+        assert!(
+            rendered[0].contains("[REDACTED]") && !rendered[0].contains("sk-secret-value"),
+            "secret must be masked: {}",
+            rendered[0]
+        );
+        assert!(
+            rendered[1].ends_with("ordinary line"),
+            "ordinary text is preserved: {}",
+            rendered[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_publishes_session_id_to_correlation() {
+        use super::prompt_over_with_correlation;
+
+        let correlation = DshCorrelation::new(99);
+        let client_channel = spawn_fake_agent(Arc::new(Observed::default()));
+        prompt_over_with_correlation(
+            TestCwd::new("correlation").path().to_path_buf(),
+            "1+1は？".to_string(),
+            client_channel,
+            correlation.clone(),
+        )
+        .await
+        .expect("offline prompt should succeed");
+
+        assert_eq!(
+            *correlation.session_id.lock().unwrap(),
+            Some(SESSION_ID.to_string()),
+            "the negotiated ACP session id must be correlated"
         );
     }
 }

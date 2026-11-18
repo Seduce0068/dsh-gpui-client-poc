@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T16:06:36+09:00"
+  at: "2026-11-18T16:19:14+09:00"
 ---
 
 ## 進行中
@@ -42,7 +42,8 @@ verified:
   factory で YAML config を適用し、enabled_with と failed 描画を実装（+5テスト）。
 - [x] `deps-and-docs-stale` — cordis-rs 表記を現行 tag v0.127.0 へ同期、
   fixture パスと未実装リストを実体へ更新。libc / mio は推移依存のため直接追加せず。
-- [ ] `tests-6-of-19` / `tests-no-mock-provider` — 19バイナリ中13の未検証を解消。まず `Channel::duplex()` + cordis `echo_provider` でオフライン本文検証を追加し、残高回復後に `acp_prompt_probe` で本文非空を確認する（根拠: `cargo test --bins` EXIT=0 だが6ファイルのみ / G5）。
+- [x] `tests-6-of-19` / `tests-no-mock-provider` — 18/19 バイナリにオフライン
+  テストを追加。実 dsh サブプロセス経路は残高回復後の手動確認として残る。
   → 2026-11-18: acp_prompt_probe / acp_stream_probe にも duplex テストを追加（進捗）。
 - [ ] `ci-gates-missing` — 共通 workflow `rust-gates.yml@v1` に `-D clippy::undocumented_unsafe_blocks` と `audit: true` を追加（提供側を先に検討）。現状は clippy `-D warnings` のみで cargo audit は未実行（根拠: raw.githubusercontent.com の v1 定義 / G3）。
 
@@ -72,14 +73,16 @@ verified:
 - [x] `cordis-services-not-provided` — sessions/systemPrompt/goals/compaction
   を provide し with_* を接続（+6テスト）。
 - [ ] `cordis-registry-duplication` / `cordis-execution-models-mixed` — PluginRegistry 登録（8対6の乖離）と window 生成を共通化し、実行モデルを `cx.spawn` 系へ統一する（G6）。
-- [ ] `session-close-absent` — graceful shutdown を実装。必要な `unstable_session_close` / `unstable_session_model` feature の有効化判断を行う（G7）。
+- [x] `session-close-absent` — stdin EOF + timeout wait の graceful shutdown
+  を実装。unstable_session_close は仕様不安定のため無効化と判断（+5テスト）。
 - [x] `multi-session-buffer-collision` — session_id キーのバッファ分割と
   安定順序のラベル表示を実装（+5テスト）。
 - [x] `config-hardcoded` / `cwd-fallback-root` — sk-demo と個人絶対パス既定を
   除去し、CLI/env/cwd 解決＋fail-closed に統一（テスト用固定値は残る）。
   → 2026-11-18: sk-demo は CLI/env/設定へ集約し fail-closed 化。他バイナリの
   既定パス・固定プロンプトは残課題（報告済み）。
-- [ ] `stderr-and-session-trace-blindspot` — dsh の stderr を捕捉し、`session_id` / PID を相関 ID として UI とログへ出す（G7）。
+- [x] `stderr-and-session-trace-blindspot` — stderr を piped 捕捉し、
+  pid/session_id を相関付与、秘密を redact（+12テスト）。
 - [x] `stream-polling-and-detach-leak` — WeakEntity + CancellationToken +
   Notify 駆動へ置換し、window close でポンプ終了（+4テスト）。
 - [ ] `errors-swallowed` / `assert-in-main-path` — `let _ = save(...)` / `build_rows().unwrap_or_default()` / 本番 `assert_eq!` をエラー表示へ置換（G7）。
@@ -88,7 +91,8 @@ verified:
   正規化・symlink escape 拒否をテストで固定（上流 resolve の未対応は記録）。
 - [ ] `tests-isolation` — `temp_dir()` 実 FS と `/tmp` 固定パス依存を排除し、並列 `cargo test` のフレーク要因を除去（G5）。
   → 2026-11-18: probe 3 ファイルの固定 /tmp を排除し並列分離テストを追加。
-- [ ] `cordis-bridge-isolated` — `cordis_bridge` の独自 `Commands` を `core_services::provide_commands` へ載せ、GPUI 側から `/compact` 登録状態を表示可能にする（G6）。
+- [x] `cordis-bridge-isolated` — 共有 CommandRegistry へ /compact を登録し、
+  GPUI 側から registered commands を観測可能に（+2テスト）。
 - [ ] `ux-pool-triage` — `investigation/round-1.md` B セクション43件を取捨選択。候補: セッション CRUD / データモデル / 検索、会話スクロール・コードコピー、入力履歴・ショートカット・キャンセル、キーボードナビゲーション、コントラスト・文字サイズ、AT-SPI 調査（G8）。
 - [ ] `deps-upstream-4-tags-behind` — cordis-rs `v0.66.0` への更新を検討。新 port（`session-title-all-prompts-llm`, `tool-schedule`, `planMode`）と Cargo プロファイル統一を活用できる（G3）。**→ DSH r5 訂正: `Cargo.toml:10` は既に `tag = "v0.67.0"`（commit c29db63）。依存更新は完了、README:107 の `v0.29.0` と本ファイルの記述を v0.67.0 へ同期すること（`investigation/round-5.md` C）。**
 - [ ] `tests-stage-b-online` — モデル残高回復後に `acp_prompt_probe` を1回実行し、本文非空と stop reason を記録する（G5）。

@@ -6,7 +6,59 @@ use agent_client_protocol::schema::{
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+/// How the graceful shutdown of the `dsh --profile acp` subprocess ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownOutcome {
+    /// The agent exited on its own after the ACP transport was closed (EOF).
+    Exited,
+    /// The agent ignored EOF and was killed after the grace period elapsed.
+    KilledAfterTimeout,
+    /// `wait()` itself failed, so the child state is unknown.
+    WaitFailed,
+}
+
+/// Gracefully tear down the `dsh --profile acp` subprocess.
+///
+/// # Why no `session/close` request (unstable-feature decision)
+///
+/// In the pinned `agent-client-protocol` 0.11.1, `CloseSessionRequest`
+/// (`session/close`) only exists behind the `unstable_session_close` feature.
+/// The schema marks it **UNSTABLE**: "not part of the spec yet, and may be
+/// removed or changed at any point" (see `agent-client-protocol-schema`
+/// `agent.rs` near `CloseSessionRequest`, and the crate's
+/// `schema/client_to_agent/requests.rs:52-53`). Enabling it would mean editing
+/// `Cargo.toml` (outside this task's two-file scope), and the project's own
+/// dependency triage (`investigation/round-5.md`) records that the gate was
+/// renamed/removed in 5.3.0, so a `session/close`-based implementation would
+/// have to be rewritten on the next ACP upgrade. Decision: do **not** enable
+/// any unstable feature.
+///
+/// The stable, wire-compatible alternative used here: when `connect_with`
+/// returns, the ACP connection and its stdio transport are dropped, which
+/// closes our write half of the child's stdin. A stdio ACP agent observes that
+/// EOF as session teardown (cancel in-flight work, release session resources).
+/// We then allow a bounded grace period for a clean exit and only escalate to
+/// `kill()` as a last resort, so a hung agent can neither leak a subprocess
+/// nor block this probe forever. (`session/cancel` is stable, but this probe
+/// sends no prompts, so there is no in-flight turn to cancel.)
+async fn shutdown_child(child: &mut tokio::process::Child, grace: Duration) -> ShutdownOutcome {
+    match tokio::time::timeout(grace, child.wait()).await {
+        Ok(Ok(_status)) => ShutdownOutcome::Exited,
+        Ok(Err(error)) => {
+            eprintln!("child wait failed: {error}");
+            ShutdownOutcome::WaitFailed
+        }
+        Err(_elapsed) => {
+            eprintln!("child did not exit within {grace:?}; killing");
+            let _ = child.kill().await;
+            let _ = child.wait().await; // reap so no zombie is left behind
+            ShutdownOutcome::KilledAfterTimeout
+        }
+    }
+}
 
 /// Run the ACP handshake (`initialize` + `session/new`) over any transport.
 ///
@@ -53,7 +105,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("INIT OK: agent_info={:?}", init.agent_info);
     eprintln!("SESSION OK: id={:?}", session.session_id);
 
-    let _ = child.kill().await;
+    // The ACP connection (and with it the stdio transport / our stdin write
+    // half) was dropped when `initialize_and_open_session` returned, so the
+    // agent has already seen EOF. Wait for a clean exit before killing.
+    let outcome = shutdown_child(&mut child, Duration::from_secs(5)).await;
+    eprintln!("SHUTDOWN = {outcome:?}");
     Ok(())
 }
 
@@ -62,6 +118,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use agent_client_protocol::schema::{
         Implementation, InitializeRequest, InitializeResponse, NewSessionRequest,
@@ -69,7 +126,7 @@ mod tests {
     };
     use agent_client_protocol::{Agent, Channel};
 
-    use super::initialize_and_open_session;
+    use super::{ShutdownOutcome, initialize_and_open_session, shutdown_child};
 
     const SESSION_ID: &str = "offline-probe-session";
     const AGENT_NAME: &str = "offline-fake-agent";
@@ -151,5 +208,61 @@ mod tests {
 
         // This probe must stay free of model calls.
         assert_eq!(observed.prompt_count.load(Ordering::SeqCst), 0);
+    }
+
+    /// Returning from `connect_with` drops the ACP transport and with it our
+    /// stdin write half. A child blocked on stdin must then see EOF and exit
+    /// on its own. This is the stable session-close mechanism `shutdown_child`
+    /// relies on instead of the unstable `session/close` request, so a
+    /// regression that keeps the pipe open must fail this test.
+    #[tokio::test]
+    async fn dropping_acp_transport_delivers_stdin_eof_to_child() {
+        use agent_client_protocol::{ByteStreams, Client};
+        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn a child that blocks on stdin");
+        let stdin = child.stdin.take().expect("child has a piped stdin");
+        let transport = ByteStreams::new(stdin.compat_write(), tokio::io::empty().compat());
+
+        // The exact result is irrelevant; what matters is that returning from
+        // `connect_with` drops the transport and closes the child's stdin.
+        let _ = Client
+            .builder()
+            .name("acp-probe-eof-test")
+            .connect_with(transport, |_cx| async { Ok(()) })
+            .await;
+
+        let outcome = shutdown_child(&mut child, Duration::from_secs(2)).await;
+        assert_eq!(outcome, ShutdownOutcome::Exited);
+    }
+
+    /// A child that exits on its own must be reported as a clean shutdown;
+    /// this guards against regressing back to an unconditional `kill()`.
+    #[tokio::test]
+    async fn shutdown_child_reports_natural_exit() {
+        let mut child = tokio::process::Command::new("true")
+            .spawn()
+            .expect("spawn a short-lived child");
+
+        let outcome = shutdown_child(&mut child, Duration::from_secs(5)).await;
+
+        assert_eq!(outcome, ShutdownOutcome::Exited);
+    }
+
+    /// A hung agent must still be terminated and reaped after the grace
+    /// period, so the probe cannot leak a subprocess or hang indefinitely.
+    #[tokio::test]
+    async fn shutdown_child_kills_a_hung_child_after_grace() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a long-lived child");
+
+        let outcome = shutdown_child(&mut child, Duration::from_millis(100)).await;
+
+        assert_eq!(outcome, ShutdownOutcome::KilledAfterTimeout);
     }
 }
