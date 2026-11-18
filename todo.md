@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T15:35:14+09:00"
+  at: "2026-11-18T15:52:16+09:00"
 ---
 
 ## 進行中
@@ -69,12 +69,15 @@ verified:
 
 ### 優先度: 中
 
-- [ ] `cordis-services-not-provided` — sessions / systemPrompt / goals / compaction を provide し、AgentLoop の `with_*` オプションを接続する（G6）。
+- [x] `cordis-services-not-provided` — sessions/systemPrompt/goals/compaction
+  を provide し with_* を接続（+6テスト）。
 - [ ] `cordis-registry-duplication` / `cordis-execution-models-mixed` — PluginRegistry 登録（8対6の乖離）と window 生成を共通化し、実行モデルを `cx.spawn` 系へ統一する（G6）。
 - [ ] `session-close-absent` — graceful shutdown を実装。必要な `unstable_session_close` / `unstable_session_model` feature の有効化判断を行う（G7）。
 - [x] `multi-session-buffer-collision` — session_id キーのバッファ分割と
   安定順序のラベル表示を実装（+5テスト）。
 - [ ] `config-hardcoded` / `cwd-fallback-root` — プロンプト、API キー（`sk-demo`）、タイムアウト、preset、cwd を設定/CLI 引数へ集約し、取得失敗時は fail-closed（G4）。
+  → 2026-11-18: sk-demo は CLI/env/設定へ集約し fail-closed 化。他バイナリの
+  既定パス・固定プロンプトは残課題（報告済み）。
 - [ ] `stderr-and-session-trace-blindspot` — dsh の stderr を捕捉し、`session_id` / PID を相関 ID として UI とログへ出す（G7）。
 - [x] `stream-polling-and-detach-leak` — WeakEntity + CancellationToken +
   Notify 駆動へ置換し、window close でポンプ終了（+4テスト）。
@@ -100,7 +103,8 @@ verified:
 - [ ] `correct-prior-pool` — `investigation/round-1.md:181` の「fixture 7エントリ」を6件へ訂正し、テスト分母を「18 bin + main = 19」へ統一（G3 / META-02, META-03）。
 - [ ] `external-research-retry` — ACP の crates.io 最新版と RUSTSEC / GitHub Advisory を、利用可能な別経路で再調査（G3）。**→ DSH r5 訂正: `investigation/round-3.md` C-17 で ACP 最新 5.3.0（2026-11-14）、C-8 で gpui/ACP/cordis の advisory 空を確認済み、B-1 で `cargo audit` 実測済み（EXIT=1/26件）。cross-review `final.md:158-159` の「cargo audit 未実行」は誤記。再調査は「ACP 5.x と DSH の互換性」と「tokio 最新版（round-5 で取得失敗）」に限定すること。**
 
-- [ ] `stream-prompt-input` acp_stream_ui の固定プロンプトを入力可能にする（detach 修正後に分離）
+- [x] `stream-prompt-input` — CLI 引数 > 環境変数 > 既定の順で解決し、
+  空入力はデフォルトへフォールバック（+5テスト）。
 
 ## 完了
 

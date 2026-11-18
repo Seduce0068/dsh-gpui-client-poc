@@ -4,16 +4,19 @@
 //! snapshot) and boots every entry whose plugin id has a factory, then renders
 //! the mounted fibers and their states in a window.
 
+use std::collections::BTreeMap;
+use std::fmt;
+
 use cordis_rs::config::Value;
 use cordis_rs::core_services::{
     provide_commands, provide_fs, provide_llm, provide_skills, provide_subagents, provide_tools,
 };
 use cordis_rs::loader::{Composition, PluginFactory, PluginRegistry, VarTable};
 use cordis_rs::plugin_ports::{
-    DeepSeekConfig, MessageFeedbackConfig, SkillFsConfig, ToolBashConfig, ToolFsConfig,
-    ToolSubagentConfig, mount_feedback_producer, mount_llm_deepseek, mount_message_feedback,
-    mount_session_persistence_jsonl, mount_skill_filesystem, mount_tool_bash, mount_tool_fs,
-    mount_tool_subagent, turn_stopping_event,
+    DEFAULT_API_KEY_ENV, DeepSeekConfig, MessageFeedbackConfig, SkillFsConfig, ToolBashConfig,
+    ToolFsConfig, ToolSubagentConfig, mount_feedback_producer, mount_llm_deepseek,
+    mount_message_feedback, mount_session_persistence_jsonl, mount_skill_filesystem,
+    mount_tool_bash, mount_tool_fs, mount_tool_subagent, turn_stopping_event,
 };
 use cordis_rs::{Context, Lifecycle};
 use gpui::{
@@ -200,6 +203,140 @@ fn failed_lines(failed: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
+/// CLI flag for the DeepSeek credential. The environment is the primary
+/// source (argv is visible to other users on many systems); the flag exists
+/// for launchers that can only inject secrets as arguments.
+const API_KEY_FLAG: &str = "--api-key";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CredentialSource {
+    Cli,
+    Env(String),
+}
+
+impl CredentialSource {
+    /// Source label for logs; the credential value itself is never logged.
+    fn label(&self) -> String {
+        match self {
+            Self::Cli => API_KEY_FLAG.to_owned(),
+            Self::Env(name) => format!("env:{name}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedCredential {
+    key: String,
+    source: CredentialSource,
+}
+
+/// Every variant is fatal at startup: no placeholder key may ever replace a
+/// missing credential (fail-closed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CredentialSetupError {
+    Missing { env_name: String },
+    Empty { source: String },
+    MalformedFlag(String),
+    UnknownFlag(String),
+    DuplicateFlag,
+}
+
+impl fmt::Display for CredentialSetupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing { env_name } => write!(
+                f,
+                "DeepSeek credential not configured: pass {API_KEY_FLAG} <KEY> or export {env_name}"
+            ),
+            Self::Empty { source } => write!(f, "DeepSeek credential from {source} is empty"),
+            Self::MalformedFlag(flag) => write!(f, "{flag} requires a non-empty value"),
+            Self::UnknownFlag(flag) => write!(f, "unknown argument: {flag}"),
+            Self::DuplicateFlag => write!(f, "{API_KEY_FLAG} specified more than once"),
+        }
+    }
+}
+
+impl std::error::Error for CredentialSetupError {}
+
+/// Resolve the credential from CLI (`--api-key VALUE` / `--api-key=VALUE`) or
+/// from the environment variable named by the composition's `apiKeyEnv`.
+/// `lookup` is injected so the logic is testable without touching the process
+/// environment. Absence, blank values and malformed flags are all errors;
+/// there is deliberately no demo fallback.
+fn resolve_credential<I>(
+    args: I,
+    lookup: impl Fn(&str) -> Option<String>,
+    env_name: &str,
+) -> Result<ResolvedCredential, CredentialSetupError>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut from_cli: Option<String> = None;
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        if let Some(tail) = arg.strip_prefix(API_KEY_FLAG) {
+            let value = if let Some(value) = tail.strip_prefix('=') {
+                value.to_owned()
+            } else {
+                if !tail.is_empty() {
+                    return Err(CredentialSetupError::MalformedFlag(arg));
+                }
+                iter.next()
+                    .ok_or_else(|| CredentialSetupError::MalformedFlag(arg.clone()))?
+            };
+            // A value that looks like another flag is a typo; a blank value is
+            // classified later as `Empty` so the message names the source.
+            if value.starts_with('-') {
+                return Err(CredentialSetupError::MalformedFlag(arg));
+            }
+            if from_cli.replace(value).is_some() {
+                return Err(CredentialSetupError::DuplicateFlag);
+            }
+        } else {
+            return Err(CredentialSetupError::UnknownFlag(arg));
+        }
+    }
+
+    let (key, source) = if let Some(key) = from_cli {
+        (key, CredentialSource::Cli)
+    } else {
+        (
+            lookup(env_name).ok_or_else(|| CredentialSetupError::Missing {
+                env_name: env_name.to_owned(),
+            })?,
+            CredentialSource::Env(env_name.to_owned()),
+        )
+    };
+    let key = key.trim().to_owned();
+    if key.is_empty() {
+        return Err(CredentialSetupError::Empty {
+            source: source.label(),
+        });
+    }
+    Ok(ResolvedCredential { key, source })
+}
+
+/// Env snapshot handed to the LLM port: exactly one entry under the name the
+/// composition configured. The port's own `resolve_api_key` then succeeds only
+/// because the host supplied a validated, non-empty credential.
+fn llm_env(key_env_name: &str, resolved: &ResolvedCredential) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert(key_env_name.to_owned(), resolved.key.clone());
+    env
+}
+
+/// `apiKeyEnv` from the fixture config (default `DEEPSEEK_API_KEY`) decides
+/// which variable the port reads; the host and the port agree by construction.
+fn llm_key_env_name(composition: &Composition) -> String {
+    composition
+        .entries
+        .iter()
+        .find(|entry| entry.id == "llm-deepseek")
+        .map(|entry| deepseek_config(&entry.config).api_key_env)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_owned())
+}
+
 struct CompositionPanel {
     lines: Vec<SharedString>,
 }
@@ -246,6 +383,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_value("DSH_SNAPSHOT_FEEDBACK", "1");
     let composition = Composition::parse_with_vars(yaml, &vars)?;
 
+    // Fail-closed credential gate: no key from CLI/env means the binary exits
+    // here, rather than mounting the LLM port with a fabricated demo secret.
+    let key_env_name = llm_key_env_name(&composition);
+    let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    let credential = resolve_credential(cli_args, |name| std::env::var(name).ok(), &key_env_name)?;
+    eprintln!(
+        "cordis_composition_ui: DeepSeek credential supplied via {} (value not logged)",
+        credential.source.label()
+    );
+    let port_env = llm_env(&key_env_name, &credential);
+
     let ctx = Context::root("gpui-composition");
     let _ = provide_tools(&ctx).await?;
     let fs = provide_fs(&ctx).await?;
@@ -282,8 +430,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
     let c = ctx.clone();
-    let mut env = std::collections::BTreeMap::new();
-    env.insert("DEEPSEEK_API_KEY".to_string(), "sk-demo".to_string());
+    let env = port_env.clone();
     registry.register(
         "@deepseek-ai/dsh-llm-deepseek-api-key",
         PluginFactory::new(move |_ctx, config| {
@@ -535,6 +682,153 @@ mod tests {
 
         let skills = skill_fs_config(&config_of("skill-filesystem"));
         assert!(skills.roots.is_empty(), "includeDefaultRoots: false");
+    }
+
+    fn cli_args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| (*part).to_owned()).collect()
+    }
+
+    fn env_lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn api_key_cli_flag_wins_over_environment() {
+        let resolved = resolve_credential(
+            cli_args(&["--api-key", "cli-secret"]),
+            env_lookup(&[("DEEPSEEK_API_KEY", "env-secret")]),
+            "DEEPSEEK_API_KEY",
+        )
+        .unwrap();
+        assert_eq!(resolved.key, "cli-secret");
+        assert_eq!(resolved.source, CredentialSource::Cli);
+    }
+
+    #[test]
+    fn api_key_equals_form_env_name_and_config_override_are_honoured() {
+        let from_equals = resolve_credential(
+            cli_args(&["--api-key=cli-secret"]),
+            |_| None,
+            "DEEPSEEK_API_KEY",
+        )
+        .unwrap();
+        assert_eq!(from_equals.key, "cli-secret");
+
+        let from_env = resolve_credential(
+            cli_args(&[]),
+            env_lookup(&[("CUSTOM_KEY", "custom-secret")]),
+            "CUSTOM_KEY",
+        )
+        .unwrap();
+        assert_eq!(from_env.key, "custom-secret");
+        assert_eq!(
+            from_env.source,
+            CredentialSource::Env("CUSTOM_KEY".to_owned())
+        );
+
+        // The env name itself comes from the fixture config (`apiKeyEnv`).
+        let mut config = BTreeMap::new();
+        config.insert(
+            "apiKeyEnv".to_owned(),
+            Value::String("CUSTOM_KEY".to_owned()),
+        );
+        assert_eq!(
+            deepseek_config(&Value::Object(config)).api_key_env,
+            "CUSTOM_KEY"
+        );
+    }
+
+    #[test]
+    fn missing_api_key_fails_closed_without_a_placeholder() {
+        let error = resolve_credential(cli_args(&[]), |_| None, "DEEPSEEK_API_KEY").unwrap_err();
+        assert_eq!(
+            error,
+            CredentialSetupError::Missing {
+                env_name: "DEEPSEEK_API_KEY".to_owned()
+            }
+        );
+        let message = error.to_string();
+        assert!(message.contains("DEEPSEEK_API_KEY"));
+        assert!(
+            !message.contains("sk-demo"),
+            "no demo credential may be suggested"
+        );
+    }
+
+    #[test]
+    fn blank_cli_or_env_value_is_rejected() {
+        assert_eq!(
+            resolve_credential(
+                cli_args(&["--api-key", "  \t "]),
+                |_| None,
+                "DEEPSEEK_API_KEY"
+            )
+            .unwrap_err(),
+            CredentialSetupError::Empty {
+                source: API_KEY_FLAG.to_owned()
+            }
+        );
+        assert_eq!(
+            resolve_credential(
+                cli_args(&[]),
+                |_| Some("   ".to_owned()),
+                "DEEPSEEK_API_KEY"
+            )
+            .unwrap_err(),
+            CredentialSetupError::Empty {
+                source: "env:DEEPSEEK_API_KEY".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_unknown_and_duplicated_flags_are_rejected() {
+        assert!(matches!(
+            resolve_credential(cli_args(&["--api-key"]), |_| None, "DEEPSEEK_API_KEY").unwrap_err(),
+            CredentialSetupError::MalformedFlag(_)
+        ));
+        assert!(matches!(
+            resolve_credential(
+                cli_args(&["--api-ke", "secret"]),
+                |_| None,
+                "DEEPSEEK_API_KEY"
+            )
+            .unwrap_err(),
+            CredentialSetupError::UnknownFlag(_)
+        ));
+        assert_eq!(
+            resolve_credential(
+                cli_args(&["--api-key", "a", "--api-key", "b"]),
+                |_| None,
+                "DEEPSEEK_API_KEY"
+            )
+            .unwrap_err(),
+            CredentialSetupError::DuplicateFlag
+        );
+    }
+
+    #[test]
+    fn credential_env_map_uses_the_configured_name_and_resolved_key() {
+        let composition = fixture_composition();
+        let name = llm_key_env_name(&composition);
+        assert_eq!(
+            name, "DEEPSEEK_API_KEY",
+            "fixture has no apiKeyEnv override"
+        );
+        let resolved =
+            resolve_credential(cli_args(&["--api-key", "real-key"]), |_| None, &name).unwrap();
+        let env = llm_env(&name, &resolved);
+        assert_eq!(env.len(), 1);
+        assert_eq!(
+            env.get("DEEPSEEK_API_KEY").map(String::as_str),
+            Some("real-key")
+        );
+        assert!(!env.values().any(|value| value == "sk-demo"));
     }
 
     #[test]
