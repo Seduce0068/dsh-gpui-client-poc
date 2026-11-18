@@ -9,6 +9,9 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 
 ## バイナリ
 
+<!-- 表のセルは折り返せないため MD013 をこの範囲のみ無効化 -->
+<!-- markdownlint-disable MD013 -->
+
 | バイナリ | 内容 |
 | --- | --- |
 | `dsh-gpui-client-poc` | GPUI による 2 ペイン（セッション一覧 + 会話）の静的 UI |
@@ -30,6 +33,8 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `cordis_composition_ui` | 実 DSH `cordis.yml` を読み込み、mount された fiber 一覧を GPUI に表示する |
 | `cordis_composition_toggle_ui` | クリックでプラグイン fiber を unload / 再 mount するデモ |
 | `cordis_entries_toggle_ui` | 実 composition の全エントリを個別に unload / 再 mount し、状態を `/tmp/cordis-entries-toggle.json` に永続化するデモ |
+
+<!-- markdownlint-enable MD013 -->
 
 ## ビルドと実行
 
@@ -65,26 +70,63 @@ cargo build --release
 
 ## 確認済み（2026-11-17）
 
-- `cordis_todo_ui`: `cargo test --bin cordis_todo_ui` で plugin → tools seam → todos projection の経路を検証。
-- 実機では Wayland ネイティブでウィンドウが開く（Xwayland の `xwininfo` には出ないため、目視はユーザー確認が必要）。
+- `cordis_todo_ui`: `cargo test --bin cordis_todo_ui` で plugin → tools seam →
+  todos projection の経路を検証。
+- 実機では Wayland ネイティブでウィンドウが開く。Xwayland の `xwininfo` には
+  出ないが、`spectacle` の全画面撮影には写り、DSH の `read_image` で
+  エージェント自身が実描画を確認できる。
 
-### GUI の目視確認（Kubuntu / Wayland）
+### GUI の実描画確認（Kubuntu / Wayland）
 
-エージェント環境には `kdotool` が無く、Wayland ネイティブのウィンドウを
-自動列挙できません。次の手順で確認してください。
+旧手順の「`kdotool` が無いため目視はユーザー確認が必要」という記述と、
+`stderr` の `GPUI window created` を grep する成功判定は **obsolete** である。
+Wayland ネイティブウィンドウは `kdotool` や `xwininfo` で列挙できないが、
+`spectacle 6.6.6` の非対話撮影なら写る（実証済み）。取得した PNG を
+DSH の `read_image` ツールで開き、エージェント自身が実描画を確認する。
 
 ```bash
-echo '=== cordis_todo_ui を起動 ==='
+echo '=== ビルド ==='
 cd /home/koppe/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc
-./target/debug/cordis_todo_ui
+cargo build --bins
 
-echo '=== 標準エラー出力の確認（別ターミナル） ==='
-# "cordis_todo_ui: GPUI window created" が出ていればウィンドウ作成成功
+echo '=== 証跡取得（各デモの全画面 PNG を EVIDENCE_DIR へ） ==='
+bash scripts/smoke-gui.sh
+
+echo '=== 証跡の確認（エージェントが read_image を呼ぶ） ==='
+# スクリプト末尾に表示された EVIDENCE_DIR 配下の
+# <bin>.png を 1 枚ずつ read_image で開く
 ```
 
-ウィンドウが見えたら `+ prepare step` / `start` / `finish` / `clear` を
-押してください。押すと `todo_write` が cordis-rs の `tools` seam 経由で
-呼ばれ、リストとステータス行数が更新されます。
+`read_image` で次を確認する（例: `cordis_todo_ui`）:
+
+- タイトル `cordis-rs x GPUI — tool-todo`
+- 本文 `No todos yet. Use the buttons below to call todo_write.`
+- ボタン `+ prepare step` / `start` / `finish` / `clear`
+- 下部ステータス `Ready`
+
+ログの有無やプロセス生存は失敗時の診断材料にとどめ、
+**成功判定には使わない**。描画が無い・期待文字列が無い場合は FAIL とする。
+ボタン押下後の更新まで確認する場合は、ウィンドウを起動したまま
+`+ prepare step` → `start` → `finish` を操作し、再度 `spectacle` で撮影して
+`read_image` で差分を確認する。
+
+#### 全画面 PNG のクロップ / マスキング方針
+
+`spectacle -b -n -o` は全画面（Kubuntu 環境では 5120x1440）を撮るため、
+対象ウィンドウ以外（ブラウザ、チャット、ファイル名など）が写り込む。
+証跡を共有・添付する際は次の方針を守る。
+
+1. 共有用画像は対象ウィンドウの領域へクロップする。
+   `magick <input>.png -crop <WxH+X+Y> +repage <output>.png`
+   座標は `read_image` で確認した画面から求める。
+2. クロップが困難な場合は不要領域を単色矩形でマスクする。
+   `magick <input>.png -fill black -draw 'rectangle X,Y X2,Y2' <output>.png`
+3. 操作履歴・個人情報・トークン等が写る領域は必ずマスクし、
+   元の全画面 PNG を報告へ添付しない。
+4. クロップ / マスキング後も `read_image` で再確認し、
+   対象 UI が判別できることと不要情報が消えていることを確かめる。
+5. 元の全画面 PNG はローカルの `EVIDENCE_DIR` にのみ置き、
+   確認後は必要に応じて削除する。共有物には加工済み画像だけを使う。
 
 ## ACP バックエンド接続（2026-11-17）
 
@@ -120,7 +162,9 @@ cordis-rs 依存は `v0.29.0` に更新済みです。
 
 ## 方針
 
-詳細はローカルの `passkey-gateway/docs/dsh-client-gpui-migration-2026-11-16.md` を参照（非公開資料のため GitHub には含まない）。
+詳細はローカルの
+`passkey-gateway/docs/dsh-client-gpui-migration-2026-11-16.md` を参照
+（非公開資料のため GitHub には含まない）。
 ユーザーにより案C（既存 Web 併存 + ACP 経由の GPUI ネイティブクライアント）
 が選択済み。
 
@@ -128,7 +172,11 @@ cordis-rs 依存は `v0.29.0` に更新済みです。
 
 ```bash
 cargo build --bins
-bash scripts/smoke-gui.sh   # 各 GPUI デモがウィンドウを作ることを確認（ディスプレイ必要）
+
+# 各 GPUI デモの実画面 PNG を取得（ディスプレイ必要）。
+# 成功判定はログ grep ではなく、出力された各 PNG の
+# read_image 確認による（上記「GUI の実描画確認」を参照）。
+bash scripts/smoke-gui.sh
 ```
 
 `acp_*` probe は外部の `dsh --profile acp` とモデル残高に依存するため、

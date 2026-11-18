@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T14:14:19+09:00"
+  at: "2026-11-18T14:32:52+09:00"
 ---
 
 ## 進行中
@@ -23,7 +23,8 @@ verified:
 
 ### 優先度: 高
 
-- [ ] `verify-smoke-false-positive` / `verify-window-not-observed` — smoke の `|| true` + ログ grep による成功判定をやめ、Render・実ウィンドウ・操作を検証する。Wayland ウィンドウ列挙手段（B-32）を確立し、README:69 の断定と 73-75 の矛盾を解消する（根拠: `scripts/smoke-gui.sh:24-32`, `README.md:69,73-75` / サイクル001 G1）。**→ DSH r5 訂正: `spectacle -b -n -o /tmp/...` + `read_image` でエージェント自身が Wayland ウィンドウの実描画（タイトル `cordis-rs x GPUI — tool-todo`、ボタン4種、ステータス `Ready`）を画像で直接確認できた（OBS-3 実証）。README:71-84 の「目視はユーザー確認が必要」は obsolete。証跡取得へ置換し、全画面PNGには他画面が写るためクロップ/マスキング方針も同時に定義する。**
+- [x] `verify-smoke-false-positive` / `verify-window-not-observed` — smoke を spectacle +
+  read_image の実描画証跡へ置換。README に obsolete 告知とクロップ/マスキング方針を記載。
 - [ ] `acp-handlers-absent` — ACP `Client.builder()` に `RequestPermissionRequest` / `ReadTextFileRequest` / `terminal/*` の `on_receive_request` handler を登録し、`method_not_found` を解消する（根拠: `agent-client-protocol-0.11.1/src/role/acp.rs:24-25` / G2）。
 - [ ] `cordis-approval-always-allow` / `agent-ui-pipeline-no-gate` — answerer を常 Allow から変更可能にし、承認 request へ tool 引数を渡す。さらに `cordis_agent_ui` で破棄している `with_approval()` pipeline を接続する（根拠: `cordis_permission_ui.rs:48-49`, `tools.rs:311-315`, `cordis_agent_ui.rs:110-127` / G2）。
 - [x] `state-tmp-fixed-paths` / `state-multi-instance-clobber` — XDG state +
@@ -34,7 +35,8 @@ verified:
 - [ ] `prompt-ui-replies-never-filled` — `cordis_prompt_ui` に AgentLoop を接続するか、`cordis_prompt_agent_ui` へ統合して README:21 の説明と実態を一致させる（根拠: `cordis_prompt_ui.rs:41,63-69,128-139` / G7）。
 - [ ] `errors-not-classified` / `retry-ui-unrelated-to-acp` — 残高 / 429 / 認証切れ / 切断を分類して回復導線を表示。retry デモが ACP と無関係であることを README に明記する（根拠: `acp_llm_probe.rs:56`, `cordis_retry_ui.rs:35-60` / G7）。
 - [x] `ux-ime-enter` — ImePhase と純粋判定で変換中 Enter の中途送信を防止（2026-11-18）。
-- [ ] `cordis-config-discarded` / `cordis-disabled-bypassed` / `cordis-failed-report-ignored` — factory で `_config` を適用し、`enabled_with(&state)` で YAML の disabled を尊重し、`MountReport::failed` を描画する（根拠: `cordis_composition_ui.rs:73-162`, `cordis_entries_toggle_ui.rs:238,250-272` / G6）。
+- [x] `cordis-config-discarded` / `disabled-bypassed` / `failed-report-ignored` —
+  factory で YAML config を適用し、enabled_with と failed 描画を実装（+5テスト）。
 - [ ] `deps-and-docs-stale` — README の cordis-rs `v0.29.0` → `v0.62.0`、fixture パス → `fixtures/text-turn.cordis.yml`、「未実装」リストを実体へ同期。`libc =0.2.177` / `mio =1.1.0` を manifest へ明示（根拠: `README.md:60,105,107,109-113`, `Cargo.toml:8-15` / G3）。
 - [ ] `tests-6-of-19` / `tests-no-mock-provider` — 19バイナリ中13の未検証を解消。まず `Channel::duplex()` + cordis `echo_provider` でオフライン本文検証を追加し、残高回復後に `acp_prompt_probe` で本文非空を確認する（根拠: `cargo test --bins` EXIT=0 だが6ファイルのみ / G5）。
 - [ ] `ci-gates-missing` — 共通 workflow `rust-gates.yml@v1` に `-D clippy::undocumented_unsafe_blocks` と `audit: true` を追加（提供側を先に検討）。現状は clippy `-D warnings` のみで cargo audit は未実行（根拠: raw.githubusercontent.com の v1 定義 / G3）。
@@ -49,8 +51,10 @@ verified:
 - [ ] `agent-ui-pipeline-no-gate (DSH r4 真因訂正)` — 真因は `cordis_agent_ui.rs:110` の `let (tools, _)` ではなく **`AgentLoop::run` が `self.tools.invoke()` を直接呼び `ToolPipeline::run` を通らない設計**（cordis-rs `agent_loop.rs:234`）。修正は AgentLoop へ pipeline を注入する API 追加 + host 側 `with_approval`。「stderr 未捕捉で外部送信」は refuted（`shell.rs:136` で piped、UI 表示）。現状 scripted provider で発火しない（根拠: `investigation/round-4.md` B）。
 - [ ] `cordis-approval-guard-reentrancy (DSH r5 新規)` — `ApprovalService::request()` が read guard 保持中に answerer を同期呼び出し（cordis-rs `approval.rs:131-149`、v0.67.0 も同一）。r4 で提案した「mpsc + UI 回答」回避策は UI が `add_answerer`/`set_policy`（write）を呼ぶと RwLock 再入デッドロック。**callback 前に guard を drop する最小修正**が先（根拠: `investigation/round-5.md` E-3）。
 - [ ] `deps-vulnerability-triage (DSH r4 新規)` — `cargo audit` 26件のうち11件は非到達（quinn-proto×8, quinn-udp, quick-xml 0.30.0×2; `cargo tree -i` で `nothing to print`）。**到達15件を優先、最優先は rmcp `RUSTSEC-2026-0462`（6.5, agent-client-protocol 直下）**。tokio `RUSTSEC-2026-0386` は `AsyncFd` 未使用のため現状発現せず（warning 扱いで CI 赤にならない）、将来 AsyncFd 導入時に修正必須（根拠: `investigation/round-4.md` C）。
-- [ ] `fs-read-errors-abort-before-window (DSH r5 新規)` — 存在しないパス／ディレクトリ指定／権限なし／不正 UTF-8 で `cordis_fs_ui.rs:64-81` の `?` が early return し **GPUI ウィンドウが開かずエラーが一切見えない**。再現容易。render 側の Err 表示へ集約して修正（根拠: `investigation/round-5.md` E5B-05）。
-- [ ] `state-json-corruption-and-silent-save-failure (DSH r5 新規)` — `/tmp/cordis-entries-toggle.json` が破損すると `load()` が `Self::default()` を返し保存済みの無効化選択が全件消える（E5B-19）。さらに save 失敗（/tmp 満杯・権限）が `let _ =` で握り潰され再起動で revert（E5B-20）。XDG state dir 移行と併せて検証・エラー可視化を追加（根拠: `investigation/round-5.md` B）。
+- [x] `fs-read-errors-abort-before-window` — FilePanel::from_result に集約し、
+  4種の読取失敗でもウィンドウを開き render で理由を表示（+5テスト）。
+- [x] `state-json-corruption-and-silent-save-failure` — 破損 JSON の警告と保存失敗の
+  stderr/UI 可視化を追加（既定値フォールバック自体は維持）。
 - [ ] `deps-and-docs-stale (DSH r5 訂正)` — 上の既存行の `v0.62.0` は陳腐化。`Cargo.toml:10` は既に **`tag = "v0.67.0"`**（commit c29db63）。README:107 の `v0.29.0` を v0.67.0 へ同期すること（根拠: `investigation/round-5.md` C / AUDIT `cordis-version-triple-mismatch`）。
 
 ### 優先度: 中
