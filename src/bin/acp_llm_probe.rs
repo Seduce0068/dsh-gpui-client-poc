@@ -577,6 +577,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use agent_client_protocol::schema::{
         ContentBlock, ContentChunk, InitializeRequest, InitializeResponse, NewSessionRequest,
         NewSessionResponse, PromptRequest, PromptResponse, SessionId, SessionNotification,
@@ -592,6 +595,41 @@ mod tests {
     };
 
     const SESSION_ID: &str = "probe-session";
+
+    /// Per-test temporary directory, removed on drop.
+    ///
+    /// The path combines the process id, an atomic sequence number and a
+    /// nanosecond timestamp, so concurrent tests never share a directory and
+    /// a reused pid across runs cannot collide either. `Drop` removes it even
+    /// when a test panics, leaving no residue in the system temp directory.
+    struct TestTempDir(PathBuf);
+
+    impl TestTempDir {
+        fn new(tag: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let seq = NEXT.fetch_add(1, Ordering::SeqCst);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default();
+            let path = std::env::temp_dir().join(format!(
+                "dsh-gpui-{tag}-{}-{seq}-{nanos:x}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create per-test temp dir");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     /// Serve a fake ACP agent over one end of an in-process duplex channel.
     ///
@@ -893,7 +931,6 @@ mod tests {
     }
 
     // ---- Secure `dsh` launch: offline regression tests (no subprocess) ----
-    use std::path::PathBuf;
 
     #[test]
     fn dsh_candidates_prefer_dsh_bin_and_stay_absolute() {
@@ -938,10 +975,10 @@ mod tests {
 
     #[test]
     fn resolve_dsh_from_picks_existing_file_and_reports_missing() {
-        let tmp = std::env::temp_dir().join(format!("dsh-pathpin-resolve-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let fake = tmp.join("dsh");
+        // No explicit cleanup: `TestTempDir::drop` owns removal, so an early
+        // failure cannot leave a stale directory behind.
+        let tmp = TestTempDir::new("pathpin-resolve");
+        let fake = tmp.path().join("dsh");
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("write fake dsh");
 
         let resolved = super::resolve_dsh_from(Some(&fake), &PathBuf::from("/"), &[])
@@ -949,10 +986,33 @@ mod tests {
         assert_eq!(resolved, fake);
         assert!(resolved.is_absolute());
 
-        let missing = super::resolve_dsh_from(Some(&tmp.join("absent")), &PathBuf::from("/"), &[]);
+        let missing =
+            super::resolve_dsh_from(Some(&tmp.path().join("absent")), &PathBuf::from("/"), &[]);
         assert!(missing.is_err(), "missing DSH_BIN must be an error");
+    }
 
-        std::fs::remove_dir_all(&tmp).expect("remove temp dir");
+    /// Regression: each test gets its own temp dir, and dropping one must not
+    /// delete another test's dir or leave its own behind.
+    #[test]
+    fn temp_dirs_are_unique_and_removed_on_drop() {
+        let first = TestTempDir::new("isolation");
+        let second = TestTempDir::new("isolation");
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+
+        assert_ne!(
+            first_path, second_path,
+            "parallel tests must not share a temp dir"
+        );
+        assert!(first_path.is_dir(), "temp dir must be a real directory");
+        assert!(second_path.is_dir(), "temp dir must be a real directory");
+
+        drop(first);
+        assert!(!first_path.exists(), "temp dir must be removed on drop");
+        assert!(
+            second_path.is_dir(),
+            "dropping one test's dir must not remove another's"
+        );
     }
 
     #[test]

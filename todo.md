@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T16:45:00+09:00"
+  at: "2026-11-18T16:53:23+09:00"
 ---
 
 ## 進行中
@@ -89,7 +89,8 @@ verified:
   → 2026-11-18: cordis_title_ui / composition_toggle_ui は解消済み。
 - [x] `tool-fs-unvalidated-path` — host 側で scoped FS(read のみ) を provide し、
   正規化・symlink escape 拒否をテストで固定（上流 resolve の未対応は記録）。
-- [ ] `tests-isolation` — `temp_dir()` 実 FS と `/tmp` 固定パス依存を排除し、並列 `cargo test` のフレーク要因を除去（G5）。
+- [x] `tests-isolation` — 全テスト一時ディレクトリを固有化し Drop で削除、
+  5バイナリ60テストで衝突・残存なしを検証。
   → 2026-11-18: probe 3 ファイルの固定 /tmp を排除し並列分離テストを追加。
 - [x] `cordis-bridge-isolated` — 共有 CommandRegistry へ /compact を登録し、
   GPUI 側から registered commands を観測可能に（+2テスト）。
@@ -109,9 +110,12 @@ verified:
   （+24テスト）。
 - [x] `performance-hypotheses` — concat は O(N^2)、増分が3桁以上高速と実測。
   機能バグではなく性能/DoS 課題と判定（investigation/performance-notes.md）。
-- [ ] `platform-build-unverified` — Windows / macOS ビルドを CI ジョブへ追加する前に gpui feature の明示選択を検討（G1）。
-- [ ] `license-apache-notice-unverified` — gpui / ACP の Apache-2.0 著作権・NOTICE 表示義務の充足を配布物で確認（G3）。
-- [ ] `gitignore-review-artifacts` — `cross-review/` / `investigation/` を `.gitignore` へ追加し、ローカル絶対パスとレビュー log の混入を防ぐ（G6）。
+- [x] `platform-build-unverified` — gpui feature / rc.exe / xcrun / fxc の条件を
+  調査・記録（investigation/platform-build-notes.md）。実ビルドは未確認。
+- [x] `license-apache-notice-unverified` — Apache-2.0 本文と著作権表示の不足5件を
+  記録（investigation/license-notice-check.md）。法的判断は保留。
+- [x] `gitignore-review-artifacts` は却下 — cross-review/ と investigation/ は
+  todo が参照する成果物として追跡済みで、無視対象にすると参照が壊れる。
 - [x] `correct-prior-pool` — fixture 6件・テスト分母 18bin+main=19 へ訂正。
 - [ ] `external-research-retry` — ACP の crates.io 最新版と RUSTSEC / GitHub Advisory を、利用可能な別経路で再調査（G3）。**→ DSH r5 訂正: `investigation/round-3.md` C-17 で ACP 最新 5.3.0（2026-11-14）、C-8 で gpui/ACP/cordis の advisory 空を確認済み、B-1 で `cargo audit` 実測済み（EXIT=1/26件）。cross-review `final.md:158-159` の「cargo audit 未実行」は誤記。再調査は「ACP 5.x と DSH の互換性」と「tokio 最新版（round-5 で取得失敗）」に限定すること。**
 
