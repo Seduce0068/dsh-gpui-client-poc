@@ -34,7 +34,7 @@ impl TodoPanel {
         let result = self.mounted.tools.invoke_blocking("todo_write", args, exec);
         self.status = match result {
             Ok(result) => SharedString::from(result.render()),
-            Err(error) => SharedString::from(format!("Error: {error}")),
+            Err(error) => SharedString::from(status_error_line(&error.to_string())),
         };
     }
 
@@ -43,15 +43,44 @@ impl TodoPanel {
         self.status = "Cleared (turn/start)".into();
     }
 
-    fn todo_list(&self) -> Vec<(String, String)> {
-        self.mounted
+    /// Rows for the todo pane. `todos_view() == None` with a registered
+    /// projection is the normal "nothing written yet" empty state; an
+    /// unregistered projection is a fault and is reported to `render`, which
+    /// shows it instead of silently rendering an empty list.
+    fn todo_list(&self) -> std::result::Result<Vec<(String, String)>, String> {
+        if !self.mounted.projections.is_registered("todos") {
+            return Err("todo projection `todos` is not registered".to_string());
+        }
+        Ok(self
+            .mounted
             .projections
             .todos_view()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|item| (item.status.as_str().to_string(), item.content))
-            .collect()
+            .map_or_else(empty_todo_rows, |todos| {
+                todos
+                    .into_iter()
+                    .map(|item| (item.status.as_str().to_string(), item.content))
+                    .collect()
+            }))
     }
+}
+
+/// The registered projection has received no `TodoWrite` yet: an empty pane,
+/// not a fault. Named explicitly so a missing registration cannot be hidden
+/// by a silent default conversion.
+fn empty_todo_rows() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+/// Text shown when `todo_write` fails. Kept pure so the existing `Error: …`
+/// status hook stays pinned by a regression test.
+fn status_error_line(error: &str) -> String {
+    format!("Error: {error}")
+}
+
+/// Text shown when the `todos` projection itself is unavailable. The old
+/// `unwrap_or_default()` made this indistinguishable from an empty list.
+fn projection_error_line(error: &str) -> String {
+    format!("projection error: {error}")
 }
 
 fn color_for(status: &str) -> gpui::Rgba {
@@ -74,7 +103,18 @@ impl Render for TodoPanel {
             .text_color(rgb(0xe8e8ef))
             .child(div().text_xl().child("cordis-rs × GPUI — tool-todo"));
 
-        let items = self.todo_list();
+        let (items, projection_error) = match self.todo_list() {
+            Ok(items) => (items, None),
+            Err(error) => (Vec::new(), Some(projection_error_line(&error))),
+        };
+        if let Some(error) = &projection_error {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xff6b6b))
+                    .child(SharedString::from(error.clone())),
+            );
+        }
         if items.is_empty() {
             pane = pane.child(
                 div()
@@ -204,6 +244,77 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cordis_rs::plugin_ports::{SessionProjections, Tools};
+
+    #[test]
+    fn status_error_line_preserves_existing_error_hook() {
+        assert_eq!(status_error_line("boom"), "Error: boom");
+    }
+
+    #[test]
+    fn projection_error_line_is_distinct_from_the_empty_hint() {
+        let message = projection_error_line("todo projection `todos` is not registered");
+        assert_eq!(
+            message,
+            "projection error: todo projection `todos` is not registered"
+        );
+        assert_ne!(
+            message,
+            "No todos yet. Use the buttons below to call todo_write."
+        );
+    }
+
+    #[test]
+    fn unregistered_projection_is_reported_instead_of_looking_empty() {
+        let panel = TodoPanel::new(MountedTodo {
+            tools: Tools::default(),
+            projections: SessionProjections::default(),
+        });
+        let error = panel
+            .todo_list()
+            .expect_err("an unregistered projection must be reported");
+        assert_eq!(error, "todo projection `todos` is not registered");
+        assert_eq!(
+            projection_error_line(&error),
+            "projection error: todo projection `todos` is not registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn registered_projection_keeps_row_hook_and_empty_state() {
+        let ctx = Context::root("gpui-todo-row-hook-test");
+        let mounted = cordis_rs::plugin_ports::mount_tool_todo(&ctx, false)
+            .await
+            .expect("mount tool-todo");
+
+        // A registered projection with no writes yet stays an empty list, not
+        // an error: the existing "No todos yet" pane hook must survive.
+        assert!(
+            TodoPanel::new(mounted.clone())
+                .todo_list()
+                .expect("registered projection")
+                .is_empty()
+        );
+
+        mounted
+            .tools
+            .invoke(
+                "todo_write",
+                TodoWriteArgs {
+                    todos: vec![RawTodo::new("Prepare workspace", "in_progress")],
+                },
+                ToolExecution::agent("gpui"),
+            )
+            .await
+            .expect("todo_write should succeed");
+
+        assert_eq!(
+            TodoPanel::new(mounted)
+                .todo_list()
+                .expect("registered projection"),
+            vec![("in_progress".to_string(), "Prepare workspace".to_string())]
+        );
+    }
 
     #[tokio::test]
     async fn mounted_port_drives_todos_through_the_tools_seam() {

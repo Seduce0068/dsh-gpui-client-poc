@@ -62,6 +62,22 @@ async fn mount_bridge(ctx: &Context) -> Result<Fiber> {
     Fiber::mount(ctx, Box::new(command_compact_plugin())).await
 }
 
+/// Look up a registered command's description, surfacing a missing entry as an
+/// error instead of quietly rendering an empty label (`unwrap_or_default()`).
+fn command_description(registry: &CommandRegistry, name: &str) -> Result<String> {
+    registry.description(name).ok_or_else(|| {
+        Error::Other(format!(
+            "command `{name}` has no description in shared registry"
+        ))
+    })
+}
+
+/// Stable stdout line for one command. Kept pure so the existing
+/// `  - <name> — <description>` output hook is covered by a regression test.
+fn command_line(name: &str, description: &str) -> String {
+    format!("  - {name} — {description}")
+}
+
 /// Read the slash commands visible through the shared `commands` service.
 ///
 /// A GPUI view can call the same helper on its own `Context`: the registry is
@@ -70,14 +86,14 @@ fn visible_commands(ctx: &Context) -> Result<Vec<(String, String)>> {
     let registry = ctx
         .get::<CommandRegistry>("commands")
         .ok_or_else(|| Error::ServiceNotFound("commands".to_string()))?;
-    Ok(registry
+    registry
         .names()
         .into_iter()
         .map(|name| {
-            let description = registry.description(&name).unwrap_or_default();
-            (name, description)
+            let description = command_description(&registry, &name)?;
+            Ok((name, description))
         })
-        .collect())
+        .collect()
 }
 
 #[tokio::main]
@@ -100,7 +116,7 @@ async fn main() -> Result<()> {
     let list = visible_commands(&ctx)?;
     println!("Registered commands ({}):", list.len());
     for (command, description) in &list {
-        println!("  - {command} — {description}");
+        println!("{}", command_line(command, description));
     }
     if !list.iter().any(|(command, _)| command == "/compact") {
         return Err(Error::Other(
@@ -131,6 +147,39 @@ mod tests {
                 .iter()
                 .any(|(name, description)| name == "/compact" && description.contains("Compact")),
             "expected a description for `/compact`, got {visible:?}"
+        );
+    }
+
+    #[test]
+    fn command_line_preserves_existing_output_hook() {
+        assert_eq!(
+            command_line("/compact", "Compact older conversation history"),
+            "  - /compact — Compact older conversation history"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_description_is_an_error_instead_of_an_empty_label() {
+        let ctx = Context::root("gpui-bridge-description-test");
+        provide_commands(&ctx)
+            .await
+            .expect("provide shared commands");
+        let registry = ctx
+            .get::<CommandRegistry>("commands")
+            .expect("shared commands service");
+        registry.register(compact_definition());
+
+        assert_eq!(
+            command_description(&registry, "/compact").expect("registered description"),
+            "Compact older conversation history"
+        );
+
+        let error = command_description(&registry, "/gone")
+            .expect_err("missing description must be reported, not defaulted");
+        let message = error.to_string();
+        assert!(
+            message.contains("/gone") && message.contains("description"),
+            "error should name the missing command/description: {message}"
         );
     }
 

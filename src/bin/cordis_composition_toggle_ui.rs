@@ -10,7 +10,8 @@ use cordis_rs::core_services::{provide_fs, provide_tools};
 use cordis_rs::ports::tool_fs::ToolFs;
 use cordis_rs::{Context, Fiber, Lifecycle};
 use gpui::{
-    App, Application, Context as GpuiContext, Render, SharedString, Window, div, prelude::*, rgb,
+    App, Application, AsyncApp, Context as GpuiContext, Entity, Render, SharedString, Window, div,
+    prelude::*, rgb,
 };
 
 /// Stable GPUI element id for the toggle button (existing DOM hook).
@@ -27,6 +28,32 @@ fn unload_error_message(error: &str) -> String {
 
 fn mount_error_message(error: &str) -> String {
     format!("mount error: {error}")
+}
+
+/// Single source for the window-creation log line. The title demo uses the
+/// identical helper so both binaries report window setup the same way.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
+/// The one place this binary creates its window. Keeping the result checked
+/// (instead of `let _ = cx.open_window(...)`) preserves the existing
+/// success/failure messages while making the wording regression-testable.
+fn open_panel_window(panel: Entity<TogglePanel>, cx: &mut App) {
+    match cx.open_window(Default::default(), |_window, _cx| panel.clone()) {
+        Ok(_window) => eprintln!(
+            "cordis_composition_toggle_ui: {}",
+            window_log_line(true, "")
+        ),
+        Err(error) => eprintln!(
+            "cordis_composition_toggle_ui: {}",
+            window_log_line(false, &error.to_string())
+        ),
+    }
 }
 
 struct ToggleState {
@@ -53,34 +80,51 @@ impl TogglePanel {
         self.status = SharedString::from(status_line(label));
     }
 
-    fn toggle(&mut self) {
+    /// Kick off the toggle on the GPUI executor instead of blocking the UI
+    /// thread with `futures::executor::block_on` while holding the state lock.
+    fn toggle(&mut self, cx: &mut App, panel: gpui::WeakEntity<TogglePanel>) {
         self.error = None;
-        let error_message = {
-            let mut state = self.state.lock().expect("toggle state poisoned");
-            if let Some(fiber) = state.fiber.take() {
-                futures::executor::block_on(fiber.unload())
-                    .err()
-                    .map(|error| unload_error_message(&error.to_string()))
-            } else {
-                match futures::executor::block_on(Fiber::mount(
-                    &state.ctx,
-                    Box::new(ToolFs {
-                        config: cordis_rs::plugin_ports::ToolFsConfig::default(),
-                    }),
-                )) {
-                    Ok(fiber) => {
-                        state.fiber = Some(fiber);
-                        None
-                    }
-                    Err(error) => Some(mount_error_message(&error.to_string())),
-                }
+        let state = self.state.clone();
+        cx.spawn(async move |app: &mut AsyncApp| {
+            let outcome = toggle_once(&state).await;
+            if let Err(message) = &outcome {
+                eprintln!("cordis_composition_toggle_ui: {message}");
             }
-        };
-        if let Some(message) = error_message {
-            eprintln!("cordis_composition_toggle_ui: {message}");
-            self.error = Some(SharedString::from(message));
+            let _ = panel.update(app, |panel, _cx| {
+                panel.error = outcome.err().map(SharedString::from);
+                panel.refresh();
+            });
+        })
+        .detach();
+    }
+}
+
+/// One toggle attempt, shared by the spawned UI task and the regression test.
+/// Each lock is released before the async mount/unload so no `MutexGuard`
+/// survives an await point.
+async fn toggle_once(state: &Arc<Mutex<ToggleState>>) -> Result<(), String> {
+    let fiber = state.lock().expect("toggle state poisoned").fiber.take();
+    if let Some(fiber) = fiber {
+        fiber
+            .unload()
+            .await
+            .map_err(|error| unload_error_message(&error.to_string()))
+    } else {
+        let ctx = state.lock().expect("toggle state poisoned").ctx.clone();
+        match Fiber::mount(
+            &ctx,
+            Box::new(ToolFs {
+                config: cordis_rs::plugin_ports::ToolFsConfig::default(),
+            }),
+        )
+        .await
+        {
+            Ok(fiber) => {
+                state.lock().expect("toggle state poisoned").fiber = Some(fiber);
+                Ok(())
+            }
+            Err(error) => Err(mount_error_message(&error.to_string())),
         }
-        self.refresh();
     }
 }
 
@@ -113,13 +157,18 @@ impl Render for TogglePanel {
                 .bg(rgb(0x2b3a4a))
                 .text_color(rgb(0xe8e8ef))
                 .child(SharedString::from(format!("click to toggle ({label})")))
-                .on_click(cx.listener(|panel, _event, _window, _cx| panel.toggle())),
+                .on_click(cx.listener(|panel, _event, _window, cx| {
+                    let weak = cx.weak_entity();
+                    panel.toggle(cx, weak);
+                })),
         )
     }
 }
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+/// Async setup is confined to a short-lived current-thread runtime; after the
+/// window opens all further cordis work runs on the GPUI executor via
+/// `cx.spawn`. This keeps the execution model identical to the title demo.
+async fn build_state() -> std::result::Result<Arc<Mutex<ToggleState>>, Box<dyn std::error::Error>> {
     let ctx = Context::root("toggle-ui");
     let _ = provide_tools(&ctx).await?;
     let _ = provide_fs(&ctx).await?;
@@ -132,10 +181,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     .await?;
     assert_eq!(fiber.state(), Lifecycle::Active);
 
-    let state = Arc::new(Mutex::new(ToggleState {
+    Ok(Arc::new(Mutex::new(ToggleState {
         fiber: Some(fiber),
-        ctx: ctx.clone(),
-    }));
+        ctx,
+    })))
+}
+
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let state = runtime.block_on(build_state())?;
 
     Application::new().run(move |cx: &mut App| {
         let mut panel = TogglePanel {
@@ -145,8 +201,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         };
         panel.refresh();
         let panel = cx.new(|_cx| panel);
-        let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
-        eprintln!("cordis_composition_toggle_ui: GPUI window created");
+        open_panel_window(panel, cx);
     });
     Ok(())
 }
@@ -180,6 +235,46 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(again.state(), Lifecycle::Active);
+    }
+
+    #[tokio::test]
+    async fn spawned_toggle_once_roundtrip_keeps_state_in_sync() {
+        let ctx = Context::root("toggle-test-spawned");
+        let _ = provide_tools(&ctx).await.unwrap();
+        let _ = provide_fs(&ctx).await.unwrap();
+        let fiber = Fiber::mount(
+            &ctx,
+            Box::new(ToolFs {
+                config: cordis_rs::plugin_ports::ToolFsConfig::default(),
+            }),
+        )
+        .await
+        .unwrap();
+        let state = Arc::new(Mutex::new(ToggleState {
+            fiber: Some(fiber),
+            ctx,
+        }));
+
+        // The same async path the spawned click handler uses must unload and
+        // remount without leaving the shared state stale.
+        toggle_once(&state).await.unwrap();
+        assert!(state.lock().expect("toggle state poisoned").fiber.is_none());
+
+        toggle_once(&state).await.unwrap();
+        let guard = state.lock().expect("toggle state poisoned");
+        assert_eq!(
+            guard.fiber.as_ref().map(Fiber::state),
+            Some(Lifecycle::Active)
+        );
+    }
+
+    #[test]
+    fn window_log_line_is_shared_and_preserves_messages() {
+        assert_eq!(window_log_line(true, ""), "GPUI window created");
+        assert_eq!(
+            window_log_line(false, "boom"),
+            "failed to create window: boom"
+        );
     }
 
     #[test]

@@ -1,8 +1,14 @@
-//! GPUI prompt input wired to the cordis-rs agent loop.
+//! GPUI prompt input and submitted-prompt display.
 //!
-//! Type a prompt, press Enter, and the scripted agent replies through the
-//! real cordis-rs tool seams. Keystrokes are captured with
-//! `App::observe_keystrokes` (gpui 0.2.2 has no built-in text input widget).
+//! Type a prompt and press Enter to append it to the submitted list; this
+//! demo does not run the cordis-rs AgentLoop, so no reply is produced. An
+//! echo provider is registered in the cordis context at startup, but
+//! `run(prompt)` is never called on submission (see `main`). Use
+//! `cordis_prompt_agent_ui` for the agent-loop-driven variant.
+//!
+//! Keystrokes are captured with `App::observe_keystrokes` (gpui 0.2.2 has no
+//! built-in text input widget); committed characters are inserted through
+//! `EntityInputHandler`.
 //!
 //! IME 変換中は Enter を送信に使わない。gpui 0.2.2 の `Keystroke` には IME
 //! 状態フラグが無いため、`Keystroke::is_ime_in_progress()` で変換フェーズを
