@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T17:46:20+09:00"
+  at: "2026-11-18T17:52:35+09:00"
 ---
 
 ## 進行中
@@ -137,8 +137,9 @@ verified:
 
 - [x] `host-pipeline-wiring` — ToolPipeline に fail-closed approval を適用し
   AgentLoop へ with_pipeline で配線（+1テスト、DOM/ACP 契約維持）。
-- [ ] `upstream-approval-guard` — ローカル fork の cordis-rs で修正・コミット済み
-  （94c277b）。利用側は git tag v0.138.0 固定のため、公開タグ/取り込み待ち。
+- [x] `upstream-approval-guard` — ローカル fork で修正（cordis-rs 94c277b）済み。
+  host は answerer を起動時に1度だけ登録し再入しないため現状非該当。ローカル path
+  patch は CI ポータビリティを壊すため不採用、公開タグ反映時に取り込む。
 
 ## 完了
 
