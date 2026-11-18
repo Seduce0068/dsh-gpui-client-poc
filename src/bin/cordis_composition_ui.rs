@@ -36,25 +36,69 @@ fn xdg_state_home() -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// Build a per-process directory beneath `base`. The pid component keeps
-/// concurrent demo runs from sharing and clobbering each other's state.
-fn per_process_state_dir(base: &std::path::Path, app: &str) -> std::path::PathBuf {
-    base.join(app).join(format!("pid-{}", std::process::id()))
+/// The two state locations used by one run.
+///
+/// `stable` is derived from the app id and the user, never the pid, so a
+/// restarted process resolves the same directory and can read state written
+/// by its predecessor. `process` is pid-scoped run scratch, so concurrent
+/// runs still cannot clobber each other's temporary files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateDirs {
+    stable: std::path::PathBuf,
+    process: std::path::PathBuf,
 }
 
-/// Resolve and create a state directory under `base`. `create_dir_all` is
-/// idempotent and non-destructive, unlike the old startup wipe that erased
-/// whatever a previous run had written.
-fn prepare_state_dir_at(
-    base: &std::path::Path,
-    app: &str,
-) -> Result<std::path::PathBuf, std::io::Error> {
-    let dir = per_process_state_dir(base, app);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// Reduce an environment-provided user id to one safe path component. Without
+/// this, a value such as `../../etc` could escape `base` through `Path::join`.
+fn sanitize_id_component(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
-fn prepare_state_dir(app: &str) -> Result<std::path::PathBuf, std::io::Error> {
+/// Stable user id from the usual environment names, with a safe fallback.
+fn stable_user() -> String {
+    std::env::var_os("USER")
+        .or_else(|| std::env::var_os("USERNAME"))
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Pure path computation, kept separate from I/O so the restart case (same
+/// app + user, different pid) can be tested directly.
+fn state_dirs_for(base: &std::path::Path, app: &str, user: &str, pid: u32) -> StateDirs {
+    let root = base.join(app);
+    StateDirs {
+        stable: root.join(format!("user-{}", sanitize_id_component(user))),
+        process: root.join(format!("pid-{pid}")),
+    }
+}
+
+/// Resolve and create both directories under `base`. `create_dir_all` is
+/// idempotent and non-destructive: a run never erases an earlier run's state.
+fn prepare_state_dir_at(base: &std::path::Path, app: &str) -> Result<StateDirs, std::io::Error> {
+    let dirs = state_dirs_for(base, app, &stable_user(), std::process::id());
+    std::fs::create_dir_all(&dirs.stable)?;
+    std::fs::create_dir_all(&dirs.process)?;
+    Ok(dirs)
+}
+
+fn prepare_state_dir(app: &str) -> Result<StateDirs, std::io::Error> {
     prepare_state_dir_at(&xdg_state_home(), app)
 }
 
@@ -188,9 +232,14 @@ impl Render for CompositionPanel {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let state_dir = prepare_state_dir("cordis-composition-ui")?;
-    let home = state_dir.join("home");
-    let sessions = state_dir.join("sessions");
+    let dirs = prepare_state_dir("cordis-composition-ui")?;
+    let home = dirs.stable.join("home");
+    let sessions = dirs.stable.join("sessions");
+    eprintln!(
+        "cordis_composition_ui: persistent state {} (run scratch {})",
+        dirs.stable.display(),
+        dirs.process.display()
+    );
     let yaml = include_str!("../../fixtures/text-turn.cordis.yml");
     let vars = VarTable::new()
         .with_home_path(&home)
@@ -346,8 +395,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         report.mounted.len()
     );
 
-    // The per-process state directory is intentionally left in place: no
-    // startup directory wipe, so a run never erases another run's state.
+    // Both state directories are intentionally left in place: no startup
+    // wipe, so neither a concurrent run nor a later restart erases state.
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| CompositionPanel::new(lines.clone()));
         let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
@@ -368,35 +417,79 @@ mod tests {
     }
 
     #[test]
-    fn state_dir_is_scoped_to_base_and_per_process() {
-        let base = test_base("scope");
-        let dir = per_process_state_dir(&base, "cordis-composition-ui");
-        assert!(dir.starts_with(&base));
-        assert!(dir.ends_with(format!("pid-{}", std::process::id())));
-        assert_eq!(
-            dir.parent().and_then(|p| p.file_name()).unwrap(),
-            "cordis-composition-ui"
-        );
+    fn state_dirs_use_stable_user_id_and_pid_scratch() {
+        let base = test_base("dirs");
+        let dirs = state_dirs_for(&base, "cordis-composition-ui", "koppe", 4321);
+        assert_eq!(dirs.stable, base.join("cordis-composition-ui/user-koppe"));
+        assert_eq!(dirs.process, base.join("cordis-composition-ui/pid-4321"));
+        assert!(dirs.stable.starts_with(&base));
+        assert!(dirs.process.starts_with(&base));
         assert!(xdg_state_home().is_absolute());
+    }
+
+    #[test]
+    fn stable_dir_is_unchanged_across_restart_pids() {
+        // A restart is exactly this: same app + user, new pid. State written by
+        // the old process must still be found by the new one.
+        let base = test_base("restart");
+        let before = state_dirs_for(&base, "cordis-composition-ui", "koppe", 1000);
+        let after = state_dirs_for(&base, "cordis-composition-ui", "koppe", 2000);
+        assert_eq!(before.stable, after.stable);
+        assert_ne!(before.process, after.process);
+
+        std::fs::create_dir_all(&before.stable).unwrap();
+        let state_file = before.stable.join("entries-state.json");
+        std::fs::write(&state_file, "{\"tool-subagent\":true}").unwrap();
+        let reread = after.stable.join("entries-state.json");
+        assert!(reread.exists(), "restarted process must see the old state");
+        assert_eq!(
+            std::fs::read_to_string(&reread).unwrap(),
+            "{\"tool-subagent\":true}"
+        );
+
+        std::fs::remove_file(&state_file).unwrap();
+        let _ = std::fs::remove_dir(&after.stable);
+        let _ = std::fs::remove_dir(after.stable.parent().unwrap());
+        let _ = std::fs::remove_dir(&base);
+    }
+
+    #[test]
+    fn user_id_is_sanitized_to_one_safe_component() {
+        assert_eq!(sanitize_id_component("koppe"), "koppe");
+        assert_eq!(sanitize_id_component("a/b c"), "a_b_c");
+        assert_eq!(sanitize_id_component("../../etc"), "etc");
+        assert_eq!(sanitize_id_component(".."), "unknown");
+        assert_eq!(sanitize_id_component(""), "unknown");
+
+        let base = test_base("sanitize");
+        let dirs = state_dirs_for(&base, "cordis-composition-ui", "../../etc", 7);
+        assert!(
+            dirs.stable.starts_with(&base),
+            "user id must not escape base"
+        );
+        assert_eq!(dirs.stable.file_name().unwrap(), "user-etc");
     }
 
     #[test]
     fn prepare_state_dir_keeps_existing_files() {
         let base = test_base("preserve");
         let first = prepare_state_dir_at(&base, "cordis-composition-ui").unwrap();
-        let sentinel = first.join("keep-me.txt");
+        assert!(first.stable.is_dir());
+        assert!(first.process.is_dir());
+        let sentinel = first.stable.join("keep-me.txt");
         std::fs::write(&sentinel, "persist").unwrap();
 
         let second = prepare_state_dir_at(&base, "cordis-composition-ui").unwrap();
         assert_eq!(first, second);
         assert_eq!(
-            std::fs::read_to_string(second.join("keep-me.txt")).unwrap(),
+            std::fs::read_to_string(second.stable.join("keep-me.txt")).unwrap(),
             "persist"
         );
 
         std::fs::remove_file(&sentinel).unwrap();
-        let _ = std::fs::remove_dir(&second);
-        let _ = std::fs::remove_dir(second.parent().unwrap());
+        let _ = std::fs::remove_dir(&second.stable);
+        let _ = std::fs::remove_dir(&second.process);
+        let _ = std::fs::remove_dir(second.stable.parent().unwrap());
         let _ = std::fs::remove_dir(&base);
     }
 

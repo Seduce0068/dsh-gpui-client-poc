@@ -28,7 +28,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `acp_stream_probe` | ACP の `session/update` をリッスンして AgentMessageChunk を表示する probe |
 | `acp_stream_ui` | ACP の chunk を共有バッファ経由で GPUI ウィンドウにリアルタイム描画するデモ |
 | `cordis_permission_ui` | permission preset をクリック切替し、approval gate 付き tool の allow/deny を表示するデモ |
-| `cordis_retry_ui` | 構造化 LLM エラー（HTTP 429）を agent-loop の retry で回復させた結果を表示するデモ |
+| `cordis_retry_ui` | ローカル stub の構造化 LLM エラー（HTTP 429）を cordis-rs agent-loop の retry で回復させるデモ。ACP / `dsh --profile acp` とは無関係 |
 | `cordis_title_ui` | LLM 生成タイトルと first-message fallback を sessionTitles から表示するデモ |
 | `cordis_composition_ui` | 実 DSH `cordis.yml` を読み込み、mount された fiber 一覧を GPUI に表示する |
 | `cordis_composition_toggle_ui` | クリックでプラグイン fiber を unload / 再 mount するデモ |
@@ -61,12 +61,20 @@ cargo build --release
 
 ## 依存バージョンの注意
 
-最新 crate をそのまま追加すると依存衝突でビルドが壊れる。
-次のピン留めが必要（詳細は調査レポート §4.4）。
+`Cargo.toml` の直接依存のうち、依存衝突を避けるため厳密に固定しているのは
+`gpui = "=0.2.2"`, `tokio = "=1.48.0"`, `tokio-util = "=0.7.16"` と
+`agent-client-protocol = "0.11.1"` です。`cordis-rs` は Git tag で固定し、
+現行は `v0.127.0` です。
 
-- `tokio = "=1.48.0"`, `tokio-util = "=0.7.16"`
-- `libc = "=0.2.177"`, `mio = "=1.1.0"`
-- `agent-client-protocol = "0.11.1"`
+`libc = 0.2.177` と `mio = 1.1.0` は直接依存として宣言していません。
+`cargo tree --offline -i libc` / `-i mio` で確認したところ、両者は gpui / tokio
+などの推移依存であり、`Cargo.lock` で当該バージョンに固定されています。
+直接依存として追加しても lock がある限り解決結果は変わらず、コードから
+未使用の依存が増えるだけなので不要と判断しました（調査レポート §4.4 は
+非公開資料でリポジトリ内には無いため、根拠は manifest と lock に置きます）。
+`cargo update` で lock を再生成すると両クレートが更新され、
+`xattr` / `ENOATTR` 周りでビルドが壊れる可能性があります。lock は勝手に
+更新せず、更新時はビルドとテストで確認してください。
 
 ## 確認済み（2026-11-17）
 
@@ -144,15 +152,24 @@ session/prompt は成功し、agent-loop まで到達しています。モデル
 
 ## 実 composition 統合（2026-11-17）
 
-`cordis_composition_ui` で `snapshots/sdk/text-turn/cordis.yml` を読み込み、
+`cordis_composition_ui` で `fixtures/text-turn.cordis.yml` を読み込み、
 6つのエントリすべてを fiber として起動して一覧を GUI に表示できます。
-cordis-rs 依存は `v0.29.0` に更新済みです。
+cordis-rs 依存は `Cargo.toml` の Git tag `v0.127.0` に同期済みです。
 
-## 未実装
+## 未実装 / 未確認
 
-- GPUI の `Render` と ACP の Tokio セッションの統合。
-- `session/update` のストリーミング表示、テキスト入力、Markdown 描画、
-  テーマ切替、locale。
+- `dsh-gpui-client-poc`（静的シェル）は ACP に接続していません。ACP 接続は
+  `acp_*` probe と `acp_stream_ui` などの個別デモに分離されています。
+- ACP `session/update` のうち `AgentMessageChunk` のテキストのみを表示し、
+  `ToolCall` / `ToolCallUpdate` / `AgentThoughtChunk` / `UsageUpdate` は
+  未対応です。ストリーム表示も共有バッファのポーリング経由であり、
+  GPUI の `Render` と Tokio セッションを単一ランタイムで直接統合した
+  わけではありません。
+- `cordis_prompt_ui` はキーボード入力と送信表示のみで AgentLoop は
+  実行しません。AgentLoop の実行は `cordis_prompt_agent_ui` を使います。
+- Markdown 描画、テーマ切替、locale / i18n は未実装です（対応コードなし）。
+- 実 LLM の応答本文は未確認です（モデル側の残高不足）。ACP の
+  `initialize` / `session/new` / `session/prompt` までは到達済みです。
 
 ## ライセンス
 
