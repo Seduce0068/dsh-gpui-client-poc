@@ -394,19 +394,27 @@ mod tests {
         prompt: Mutex<Option<(SessionId, String)>>,
     }
 
-    /// Per-test temporary cwd, removed on drop.
+    /// Per-test temporary directory, removed on drop.
     ///
-    /// A shared fixed `/tmp/...` path can collide between parallel tests, so
-    /// the path is made unique with the process id plus a call counter.
-    struct TestCwd(PathBuf);
+    /// The path combines the process id, an atomic sequence number and a
+    /// nanosecond timestamp, so concurrent tests never share a directory and
+    /// a reused pid across runs cannot collide either. `Drop` removes it even
+    /// when a test panics, leaving no residue in the system temp directory.
+    struct TestTempDir(PathBuf);
 
-    impl TestCwd {
+    impl TestTempDir {
         fn new(tag: &str) -> Self {
             static NEXT: AtomicUsize = AtomicUsize::new(0);
             let seq = NEXT.fetch_add(1, Ordering::SeqCst);
-            let path =
-                std::env::temp_dir().join(format!("dsh-gpui-{tag}-{}-{seq}", std::process::id()));
-            std::fs::create_dir_all(&path).expect("create per-test temp cwd");
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default();
+            let path = std::env::temp_dir().join(format!(
+                "dsh-gpui-{tag}-{}-{seq}-{nanos:x}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create per-test temp dir");
             Self(path)
         }
 
@@ -415,7 +423,7 @@ mod tests {
         }
     }
 
-    impl Drop for TestCwd {
+    impl Drop for TestTempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
@@ -478,7 +486,7 @@ mod tests {
     async fn agent_message_chunks_are_captured_in_order() {
         let observed = Arc::new(Observed::default());
         let client_channel = spawn_fake_agent(&["2+2", "=4"], Arc::clone(&observed));
-        let cwd = TestCwd::new("stream");
+        let cwd = TestTempDir::new("stream");
         let prompt = "1+1은?".to_string();
 
         let (collected, outcome) =
@@ -505,7 +513,7 @@ mod tests {
     async fn no_chunks_are_captured_when_agent_streams_no_text() {
         let observed = Arc::new(Observed::default());
         let client_channel = spawn_fake_agent(&[], Arc::clone(&observed));
-        let cwd = TestCwd::new("stream-empty");
+        let cwd = TestTempDir::new("stream-empty");
 
         let (collected, outcome) = stream_prompt_over(
             cwd.path().to_path_buf(),
@@ -523,24 +531,33 @@ mod tests {
         );
     }
 
-    /// Regression: every test gets its own temp cwd, so parallel runs cannot
-    /// share (or race on) a hardcoded `/tmp` directory.
+    /// Regression: every test gets its own temp dir, so parallel runs cannot
+    /// share (or race on) a hardcoded `/tmp` directory, and dropping one must
+    /// not delete another's or leave residue behind.
     #[test]
-    fn per_test_cwds_are_unique_and_real() {
-        let first = TestCwd::new("stream");
-        let second = TestCwd::new("stream");
+    fn temp_dirs_are_unique_and_removed_on_drop() {
+        let first = TestTempDir::new("stream");
+        let second = TestTempDir::new("stream");
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
 
         assert_ne!(
-            first.path(),
-            second.path(),
+            first_path, second_path,
             "two tests must not receive the same cwd"
         );
-        assert!(first.path().is_dir(), "cwd must be a real directory");
-        assert!(second.path().is_dir(), "cwd must be a real directory");
+        assert!(first_path.is_dir(), "cwd must be a real directory");
+        assert!(second_path.is_dir(), "cwd must be a real directory");
         assert!(
-            first.path().starts_with(std::env::temp_dir()),
+            first_path.starts_with(std::env::temp_dir()),
             "cwd must live under the temp directory: {}",
-            first.path().display()
+            first_path.display()
+        );
+
+        drop(first);
+        assert!(!first_path.exists(), "temp dir must be removed on drop");
+        assert!(
+            second_path.is_dir(),
+            "dropping one test's dir must not remove another's"
         );
     }
 
@@ -607,7 +624,7 @@ mod tests {
     async fn handshake_publishes_session_id_to_correlation() {
         let correlation = DshCorrelation::new(99);
         let client_channel = spawn_fake_agent(&[], Arc::new(Observed::default()));
-        let cwd = TestCwd::new("correlation");
+        let cwd = TestTempDir::new("correlation");
         stream_prompt_over_with_correlation(
             cwd.path().to_path_buf(),
             "1+1은?".to_string(),
@@ -669,10 +686,10 @@ mod tests {
 
     #[test]
     fn resolve_dsh_from_picks_existing_file_and_reports_missing() {
-        let tmp = std::env::temp_dir().join(format!("dsh-pathpin-resolve-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let fake = tmp.join("dsh");
+        // No explicit cleanup: `TestTempDir::drop` owns removal, so an early
+        // failure cannot leave a stale directory behind.
+        let tmp = TestTempDir::new("pathpin-resolve");
+        let fake = tmp.path().join("dsh");
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("write fake dsh");
 
         let resolved = super::resolve_dsh_from(Some(&fake), &PathBuf::from("/"), &[])
@@ -680,10 +697,9 @@ mod tests {
         assert_eq!(resolved, fake);
         assert!(resolved.is_absolute());
 
-        let missing = super::resolve_dsh_from(Some(&tmp.join("absent")), &PathBuf::from("/"), &[]);
+        let missing =
+            super::resolve_dsh_from(Some(&tmp.path().join("absent")), &PathBuf::from("/"), &[]);
         assert!(missing.is_err(), "missing DSH_BIN must be an error");
-
-        std::fs::remove_dir_all(&tmp).expect("remove temp dir");
     }
 
     #[test]
