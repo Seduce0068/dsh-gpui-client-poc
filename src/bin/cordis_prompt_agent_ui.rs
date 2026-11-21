@@ -170,6 +170,10 @@ impl PromptAgentPanel {
         self.draft.clear();
         self.prompts.push(SharedString::from(prompt.clone()));
         self.replies.push(SharedString::from("(running…)"));
+        // Clear the previous attempt's error banner when a new prompt starts,
+        // so a success after a failure does not keep showing stale red text
+        // (swarm review R5-VU01).
+        self.error = None;
         self.busy = true;
         Some(prompt)
     }
