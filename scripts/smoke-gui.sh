@@ -21,12 +21,16 @@ BINS=(
 	cordis_prompt_agent_ui
 	cordis_composition_ui
 	cordis_composition_toggle_ui
-	cordis_entries_toggle_ui
 	cordis_permission_ui
 	cordis_retry_ui
 	cordis_title_ui
-	acp_stream_ui
 )
+
+# Intentionally excluded (swarm review R5-VU02): these need external state and
+# would abort the whole script on `set -e` in a clean environment:
+#   - cordis_entries_toggle_ui: requires DEEPSEEK_API_KEY / --api-key
+#   - acp_stream_ui: requires an absolute-path `dsh` binary (DSH_BIN)
+# Run them manually when those prerequisites are available.
 
 # --- 事前確認（失敗したら即終了） ---
 if ! command -v spectacle >/dev/null 2>&1; then
