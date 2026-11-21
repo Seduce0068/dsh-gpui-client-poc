@@ -1018,7 +1018,7 @@ dependencies = [
 [[package]]
 name = "cordis-rs"
 version = "0.1.0"
-source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.218.0#c8393a8a3bc823748e574b2e94c34ee5969308a9"
+source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.219.0#6e27864e20578b013d34451006d24b37eaa6afcf"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1028,6 +1028,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "url",
 ]
 
 [[package]]
