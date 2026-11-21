@@ -119,6 +119,14 @@ echo '=== 証跡の確認（エージェントが read_image を呼ぶ） ==='
 # <bin>.png を 1 枚ずつ read_image で開く
 ```
 
+`smoke-gui.sh` は外部依存のないデモのみを対象にする。以下は個別に起動する。
+
+- `cordis_entries_toggle_ui`: `DEEPSEEK_API_KEY` または `--api-key` が必要。
+- `acp_stream_ui`: 絶対パスの `dsh` バイナリ（`DSH_BIN`）が必要。
+
+これらをスクリプトに含めると、認証や `dsh` が無い環境で `set -e` により
+途中停止するため、手動起動に委ねる。
+
 `read_image` で次を確認する（例: `cordis_todo_ui`）:
 
 - タイトル `cordis-rs x GPUI — tool-todo`
