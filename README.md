@@ -32,7 +32,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | `cordis_title_ui` | LLM 生成タイトルと first-message fallback を sessionTitles から表示するデモ |
 | `cordis_composition_ui` | 実 DSH `cordis.yml` を読み込み、mount された fiber 一覧を GPUI に表示する |
 | `cordis_composition_toggle_ui` | クリックでプラグイン fiber を unload / 再 mount するデモ |
-| `cordis_entries_toggle_ui` | 実 composition の全エントリを個別に unload / 再 mount し、状態を `/tmp/cordis-entries-toggle.json` に永続化するデモ |
+| `cordis_entries_toggle_ui` | 実 composition の全エントリを個別に unload / 再 mount し、状態を XDG state home 配下の `cordis-entries-toggle/user-<user>` / `pid-<pid>` に永続化するデモ |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -176,7 +176,7 @@ session/prompt は成功し、agent-loop まで到達しています。モデル
 
 `cordis_composition_ui` で `fixtures/text-turn.cordis.yml` を読み込み、
 6つのエントリすべてを fiber として起動して一覧を GUI に表示できます。
-cordis-rs 依存は `Cargo.toml` の Git tag `v0.133.0` に同期済みです。
+cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `v0.255.0`）。
 
 ## 未実装 / 未確認
 
