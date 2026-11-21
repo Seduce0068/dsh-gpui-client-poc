@@ -614,19 +614,22 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let _ = provide_commands(&ctx).await?;
     let registry = build_registry(&ctx, &sessions, port_env);
 
-    // Restore previously saved enable/disable choices. `load` maps a missing
-    // or malformed file to empty overrides, so flag a malformed existing file
-    // instead of silently falling back to the YAML defaults.
-    if state_path.exists()
-        && std::fs::read_to_string(&state_path)
-            .is_ok_and(|text| serde_json::from_str::<serde_json::Value>(&text).is_err())
-    {
-        eprintln!(
-            "cordis_entries_toggle_ui: ignoring malformed state file {}",
-            state_path.display()
-        );
-    }
-    let saved = CompositionState::load(&state_path);
+    // Restore previously saved enable/disable choices. Use `try_load` so a
+    // schema-invalid file (e.g. `{"a": "yes"}`) is flagged too: the old JSON
+    // syntax-only check missed those, and `load` silently fell back to empty
+    // overrides, losing the user's disable settings (swarm review R5-VU05).
+    // A single `try_load` also avoids reading the file twice (TOCTOU).
+    let saved = match CompositionState::try_load(&state_path) {
+        Ok(saved) => saved,
+        Err(error) => {
+            if state_path.exists() {
+                eprintln!(
+                    "cordis_entries_toggle_ui: saved enable/disable choices were lost; using YAML defaults: {error}"
+                );
+            }
+            CompositionState::default()
+        }
+    };
 
     // `enabled_with` layers saved overrides onto each entry's YAML `disabled`
     // default. The old code hardcoded `saved.is_enabled(&id, true)`, so a
