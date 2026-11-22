@@ -64,7 +64,7 @@ cargo build --release
 `Cargo.toml` の直接依存のうち、依存衝突を避けるため厳密に固定しているのは
 `gpui = "=0.2.2"`, `tokio = "=1.48.0"`, `tokio-util = "=0.7.16"` と
 `agent-client-protocol = "0.11.1"` です。`cordis-rs` は Git tag で固定し、
-現行は `v0.303.0` です。
+現行は `v0.304.0` です。
 
 `libc = 0.2.177` と `mio = 1.1.0` は直接依存として宣言していません。
 `cargo tree --offline -i libc` / `-i mio` で確認したところ、両者は gpui / tokio
