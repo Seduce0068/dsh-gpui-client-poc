@@ -1018,7 +1018,7 @@ dependencies = [
 [[package]]
 name = "cordis-rs"
 version = "0.1.0"
-source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.346.0#1a8c1e52c77c8d565ac95dd8b91e228f8b858e84"
+source = "git+https://github.com/Seduce0068/cordis-rs?tag=v0.347.0#645fd90daf19ed612f66a5e2cd8a8f0d3789bd39"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5172,7 +5172,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
