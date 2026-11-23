@@ -58,9 +58,9 @@ verified:
 - [x] `stream-tag-serialization-hidden` — tag_from_json が Err を受け取り
   stderr に理由を出し unserializable タグを返すよう修正、回帰テスト追加
   （round 292）。
-- [ ] `credential-env-non-utf8` — composition/entries toggle UI が
-  std::env::var().ok() で非 UTF-8 環境変数を未設定と誤判定
-  （src/bin/cordis_composition_ui.rs:390 等）。
+- [x] `credential-env-non-utf8` — 両 UI の credential getter を var_os +
+  to_string_lossy に変更し、非 UTF-8 値を未設定と誤判定しないようにした
+  （round 293）。
 - [ ] `permission-error-flattened` — switch エラーが ERROR 文字列に
   平坦化されエラー型が失われる（src/bin/cordis_permission_ui.rs:251-255）。
 - [x] `thinking-string-silent-fallback` — enabled / disabled のみを受理し

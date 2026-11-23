@@ -396,7 +396,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // here, rather than mounting the LLM port with a fabricated demo secret.
     let key_env_name = llm_key_env_name(&composition);
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
-    let credential = resolve_credential(cli_args, |name| std::env::var(name).ok(), &key_env_name)?;
+    let credential = resolve_credential(
+        cli_args,
+        // var_os + to_string_lossy keeps a non-UTF-8 value distinguishable
+        // from an unset variable (swarm review round 283).
+        |name| std::env::var_os(name).map(|value| value.to_string_lossy().into_owned()),
+        &key_env_name,
+    )?;
     eprintln!(
         "cordis_composition_ui: DeepSeek credential supplied via {} (value not logged)",
         credential.source.label()
