@@ -175,16 +175,17 @@ session/prompt は成功し、agent-loop まで到達しています。モデル
 ## 実 composition 統合（2026-11-17）
 
 `cordis_composition_ui` で `fixtures/text-turn.cordis.yml` を読み込み、
-6つのエントリすべてを fiber として起動して一覧を GUI に表示できます。
-cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `v0.255.0`）。
+port が存在するエントリのみを fiber として起動し、failed / skipped を一覧表示します。
+cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `v0.377.0`）。
 
 ## 未実装 / 未確認
 
 - `dsh-gpui-client-poc`（静的シェル）は ACP に接続していません。ACP 接続は
   `acp_*` probe と `acp_stream_ui` などの個別デモに分離されています。
-- ACP `session/update` のうち `AgentMessageChunk` のテキストのみを表示し、
-  `ToolCall` / `ToolCallUpdate` / `AgentThoughtChunk` / `UsageUpdate` は
-  未対応です。ストリーム表示も共有バッファのポーリング経由であり、
+- ACP `session/update` のうち `AgentMessageChunk` のテキストに加え、
+  `ToolCall` / `ToolCallUpdate` / `AgentThoughtChunk` / `ConfigOptionUpdate`
+  を描画します。`UsageUpdate` は未対応のため ignored 理由を表示します。
+  ストリーム表示も共有バッファのポーリング経由であり、
   GPUI の `Render` と Tokio セッションを単一ランタイムで直接統合した
   わけではありません。
 - `cordis_prompt_ui` はキーボード入力と送信表示のみで AgentLoop は

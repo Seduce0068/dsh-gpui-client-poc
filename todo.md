@@ -26,15 +26,9 @@ verified:
 - [ ] `toggle-unload-failure-loses-fiber` — toggle_once が fiber を
   take した後に unload し、失敗時に state.fiber が None のままになる
   （src/bin/cordis_composition_toggle_ui.rs:105-111）。失敗時に差し戻す。
-- [ ] `README-stale-cordis-version` — README.md:179 が v0.255.0、
-  Cargo.toml:10 と README.md:67 は v0.377.0。版数照合 gate も追加。
-- [ ] `README-stale-stream-variants` — README.md:183-189 が
-  ToolCall / ToolCallUpdate / AgentThoughtChunk 未対応と記載するが
-  実装済み（src/bin/acp_stream_ui.rs:193-224）。
-  UsageUpdate のみ ignored と明記。
-- [ ] `README-stale-partial-mount` — README.md:178 が
-  「6エントリすべて起動」と記載するが部分 mount + failed/skipped
-  レポートへ変更済み。
+- [x] `README-stale-cordis-version` — README.md の版数表記を v0.377.0 に統一（2026-11-23、round 284）。版数照合 gate 追加は残タスク。
+- [x] `README-stale-stream-variants` — 実装済み4 variant を描画済みと記載修正、UsageUpdate のみ ignored と明記（2026-11-23、round 284）。
+- [x] `README-stale-partial-mount` — port 存在分のみ起動＋failed/skipped 表示へ記載修正（2026-11-23、round 284）。
 
 ### 優先度: 中（swarm コンボ 2026-11-23 round 283 で追加）
 
