@@ -38,9 +38,9 @@ verified:
 - [ ] `prompt-input-validation` — DSH_ACP_PROMPT / CLI prompt に
   trim・長さ上限・制御文字検証がなく空 prompt が child へ渡る
   （src/bin/acp_stream_ui.rs:121,385,486）。
-- [ ] `approval-env-fail-open` — DSH_GPUI_APPROVAL_ANSWER の不正値が
-  黙って Allow にフォールバック（src/bin/cordis_permission_ui.rs:31,53-58）。
-  Deny/Ask に倒すか doc 明記。
+- [x] `approval-env-fail-open` — 未設定は Allow 維持、不正値（タイポ等）は
+  Ask に fail-closed（stderr 警告付き）。純粋ヘルパー from_env_result を
+  追加して境界テスト（未設定/正常値/タイポ/空）を固定（round 285）。
 - [ ] `composition-negative-config-clamp` — message_feedback_config /
   tool_subagent_config が負値を 0 に丸めて検証をすり抜ける
   （src/bin/cordis_composition_ui.rs:165-186）。

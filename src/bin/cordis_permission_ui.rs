@@ -48,13 +48,20 @@ impl AnswerMode {
         }
     }
 
-    /// Unknown or unset values fall back to the historical always-Allow
-    /// behaviour, so existing launches keep working.
+    /// Unset keeps the historical always-Allow behaviour; a malformed value
+    /// is a config typo and fails closed to Ask (swarm review round 283).
     fn from_env() -> Self {
-        env::var(ANSWER_ENV)
-            .ok()
-            .and_then(|raw| Self::parse(&raw))
-            .unwrap_or(Self::Allow)
+        Self::from_env_result(env::var(ANSWER_ENV), ANSWER_ENV)
+    }
+
+    fn from_env_result(raw: std::result::Result<String, env::VarError>, name: &str) -> Self {
+        match raw {
+            Err(_) => Self::Allow,
+            Ok(raw) => Self::parse(&raw).unwrap_or_else(|| {
+                eprintln!("invalid {name}={raw:?}; falling back to ask");
+                Self::Ask
+            }),
+        }
     }
 
     fn as_str(self) -> &'static str {
@@ -285,6 +292,32 @@ mod tests {
 
     fn sample_request() -> ApprovalRequest {
         ApprovalRequest::new("tool:bash", "Execute tool bash with the supplied arguments")
+    }
+
+    #[test]
+    fn malformed_answer_env_fails_closed_to_ask() {
+        use std::env::VarError;
+
+        assert_eq!(
+            AnswerMode::from_env_result(Err(VarError::NotPresent), ANSWER_ENV),
+            AnswerMode::Allow
+        );
+        assert_eq!(
+            AnswerMode::from_env_result(Ok("ALLOW".to_string()), ANSWER_ENV),
+            AnswerMode::Allow
+        );
+        assert_eq!(
+            AnswerMode::from_env_result(Ok("deny".to_string()), ANSWER_ENV),
+            AnswerMode::Deny
+        );
+        assert_eq!(
+            AnswerMode::from_env_result(Ok("alow".to_string()), ANSWER_ENV),
+            AnswerMode::Ask
+        );
+        assert_eq!(
+            AnswerMode::from_env_result(Ok("".to_string()), ANSWER_ENV),
+            AnswerMode::Ask
+        );
     }
 
     #[test]
