@@ -16,6 +16,9 @@ use gpui::{
 struct TodoPanel {
     mounted: Arc<MountedTodo>,
     status: SharedString,
+    /// Last tool-call error, kept until the next successful operation so a
+    /// later status update does not hide a failed write (swarm review round 283).
+    error: Option<SharedString>,
 }
 
 impl TodoPanel {
@@ -23,6 +26,7 @@ impl TodoPanel {
         Self {
             mounted: Arc::new(mounted),
             status: "Ready".into(),
+            error: None,
         }
     }
 
@@ -33,14 +37,22 @@ impl TodoPanel {
         let exec = ToolExecution::agent("gpui");
         let result = self.mounted.tools.invoke_blocking("todo_write", args, exec);
         self.status = match result {
-            Ok(result) => SharedString::from(result.render()),
-            Err(error) => SharedString::from(status_error_line(&error.to_string())),
+            Ok(result) => {
+                self.error = None;
+                SharedString::from(result.render())
+            }
+            Err(error) => {
+                let line = SharedString::from(status_error_line(&error.to_string()));
+                self.error = Some(line.clone());
+                line
+            }
         };
     }
 
     fn clear(&mut self) {
         self.mounted.projections.append(SessionEvent::TurnStart);
         self.status = "Cleared (turn/start)".into();
+        self.error = None;
     }
 
     /// Rows for the todo pane. `todos_view() == None` with a registered
@@ -113,6 +125,14 @@ impl Render for TodoPanel {
                     .text_sm()
                     .text_color(rgb(0xff6b6b))
                     .child(SharedString::from(error.clone())),
+            );
+        }
+        if let Some(error) = &self.error {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(0xff6b6b))
+                    .child(error.clone()),
             );
         }
         if items.is_empty() {

@@ -47,9 +47,9 @@ verified:
 - [x] `prompt-agent-finish-state` — finish が完了時に error バナーを
   クリアするよう修正（fail 自身の error は finish の後に設定されるため
   保持）、成功後の失败表示残留を防ぐ回帰テスト追加（round 294）。
-- [ ] `todo-ui-error-not-persisted` — cordis_todo_ui::write の失敗が
-  status にしか出ず次の操作で消える（src/bin/cordis_todo_ui.rs:29-44）。
-  専用 error フィールドを追加。
+- [x] `todo-ui-error-not-persisted` — TodoPanel に専用 error フィールドを
+  追加し write 失敗時に保持、成功/clear でクリア、render で赤色表示
+  （round 295）。
 
 ### 優先度: 低（swarm コンボ 2026-11-23 round 283 で追加）
 
