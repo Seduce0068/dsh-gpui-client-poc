@@ -119,6 +119,7 @@ const DEFAULT_PROMPT: &str = "Explain this repository in one sentence.";
 
 /// Environment variable holding a user-supplied prompt (CLI arguments win).
 const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
+const MAX_PROMPT_CHARS: usize = 4096;
 
 /// One independent transcript per ACP session, plus connection-level status.
 ///
@@ -371,17 +372,33 @@ async fn run_stream_pump(signal: &StreamSignal, mut on_change: impl FnMut() -> b
 /// argument or an explicitly empty environment variable cannot send a blank
 /// prompt to the agent. Kept pure so the input contract is regression-testable
 /// without opening GPUI or an ACP connection.
+fn sanitize_prompt(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Reject NUL and terminal-escape controls; allow newline/tab for
+    // multi-line demo prompts (swarm review round 283).
+    if trimmed
+        .chars()
+        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\t')))
+    {
+        return None;
+    }
+    if trimmed.chars().count() > MAX_PROMPT_CHARS {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
 fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
     let from_args = args.join(" ");
-    let from_args = from_args.trim();
-    if !from_args.is_empty() {
-        return from_args.to_owned();
+    if let Some(prompt) = sanitize_prompt(&from_args) {
+        return prompt;
     }
 
     env_prompt
-        .map(str::trim)
-        .filter(|prompt| !prompt.is_empty())
-        .map(str::to_owned)
+        .and_then(sanitize_prompt)
         .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
 }
 
@@ -849,6 +866,28 @@ mod tests {
 
     /// Blank input at every layer falls back to the legacy fixed prompt, so an
     /// empty argument can never send an empty prompt to the agent.
+    #[test]
+    fn prompt_rejects_control_chars_and_overlong_input() {
+        // NUL in CLI falls through to the env value.
+        assert_eq!(
+            resolve_prompt(&args(&["a\0b"]), Some("env prompt")),
+            "env prompt"
+        );
+        // ESC is rejected; env fallback then applies.
+        assert_eq!(
+            resolve_prompt(&args(&["a\u{1b}b"]), Some("env prompt")),
+            "env prompt"
+        );
+        // An overlong env value falls back to the default.
+        let long = "x".repeat(MAX_PROMPT_CHARS + 1);
+        assert_eq!(resolve_prompt(&[], Some(&long)), DEFAULT_PROMPT);
+        // Newlines and tabs remain allowed for multi-line demo prompts.
+        assert_eq!(
+            resolve_prompt(&args(&["hello\nworld"]), None),
+            "hello\nworld"
+        );
+    }
+
     #[test]
     fn prompt_falls_back_to_default_when_input_is_blank() {
         assert_eq!(resolve_prompt(&[], None), DEFAULT_PROMPT);

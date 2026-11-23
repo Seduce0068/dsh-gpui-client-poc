@@ -35,9 +35,10 @@ verified:
 
 ### 優先度: 中（swarm コンボ 2026-11-23 round 283 で追加）
 
-- [ ] `prompt-input-validation` — DSH_ACP_PROMPT / CLI prompt に
-  trim・長さ上限・制御文字検証がなく空 prompt が child へ渡る
-  （src/bin/acp_stream_ui.rs:121,385,486）。
+- [x] `prompt-input-validation` — resolve_prompt に sanitize_prompt を追加し
+  NUL/ESC 等の制御文字を拒否（改行・タブは許可）、4096文字上限を適用、
+  不正入力は次の候補へフォールバック。CLI/env 双方を1関数でカバーし
+  境界テストを追加（round 287）。
 - [x] `approval-env-fail-open` — 未設定は Allow 維持、不正値（タイポ等）は
   Ask に fail-closed（stderr 警告付き）。純粋ヘルパー from_env_result を
   追加して境界テスト（未設定/正常値/タイポ/空）を固定（round 285）。
