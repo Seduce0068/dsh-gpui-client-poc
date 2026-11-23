@@ -169,6 +169,26 @@ fn dsh_command_parts() -> Result<(PathBuf, OsString), String> {
 
 /// CLI args for the spawned `dsh`; an optional `--patch` overlay routes the
 /// stage-B probe through the NVIDIA free model without editing global config.
+/// Validate the optional patch overlay path. An empty value means "unset";
+/// a non-empty value must name an existing file, otherwise the typo would
+/// silently produce a probe result without the patch (swarm review round 283).
+fn resolve_patch_path(
+    raw: Option<std::ffi::OsString>,
+) -> std::result::Result<Option<std::ffi::OsString>, String> {
+    match raw {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => {
+            let path = std::path::Path::new(&value);
+            if !path.is_file() {
+                Err(format!("DSH_ACP_PATCH is not a file: {value:?}"))
+            } else {
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
 fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
     let mut args = vec![OsString::from("--profile"), OsString::from("acp")];
     if let Some(patch) = patch {
@@ -529,7 +549,7 @@ async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
-    let patch = std::env::var_os("DSH_ACP_PATCH").filter(|value| !value.is_empty());
+    let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))?;
     cmd.args(dsh_cli_args(patch.as_deref()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1049,6 +1069,33 @@ mod tests {
                 .iter()
                 .all(|part| part != &PathBuf::from("/tmp") && part != &PathBuf::from("."))
         );
+    }
+
+    #[test]
+    fn patch_path_validation_distinguishes_unset_from_typo() {
+        assert_eq!(super::resolve_patch_path(None).unwrap(), None);
+        assert_eq!(
+            super::resolve_patch_path(Some(std::ffi::OsString::new())).unwrap(),
+            None
+        );
+        assert!(
+            super::resolve_patch_path(Some(std::ffi::OsString::from(
+                "/definitely/missing/patch.yml"
+            )))
+            .is_err()
+        );
+        let existing = std::env::temp_dir().join(format!("acp-patch-{}.yml", std::process::id()));
+        std::fs::write(
+            &existing,
+            "profile: {}
+",
+        )
+        .unwrap();
+        assert_eq!(
+            super::resolve_patch_path(Some(existing.clone().into_os_string())).unwrap(),
+            Some(existing.clone().into_os_string())
+        );
+        let _ = std::fs::remove_file(existing);
     }
 
     #[test]

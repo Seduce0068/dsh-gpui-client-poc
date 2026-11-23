@@ -54,8 +54,8 @@ verified:
 
 ### 優先度: 低（swarm コンボ 2026-11-23 round 283 で追加）
 
-- [ ] `acp-patch-empty-path` — DSH_ACP_PATCH の空文字が未設定扱いで
-  指定ミスが黙って無視される（src/bin/acp_llm_probe.rs:532）。
+- [x] `acp-patch-empty-path` — resolve_patch_path を追加し、空文字は未設定、
+  非空で存在しないパスは明示エラーに変更。境界テスト追加（round 289）。
 - [ ] `stream-tag-serialization-hidden` — tag_from_json が
   serde_json::to_value 失敗を unknown に丸め cordis-rs の型エラーを隠す
   （src/bin/acp_stream_ui.rs:237-251）。
