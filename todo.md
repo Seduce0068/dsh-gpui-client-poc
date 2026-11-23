@@ -64,9 +64,8 @@ verified:
   （src/bin/cordis_composition_ui.rs:390 等）。
 - [ ] `permission-error-flattened` — switch エラーが ERROR 文字列に
   平坦化されエラー型が失われる（src/bin/cordis_permission_ui.rs:251-255）。
-- [ ] `thinking-string-silent-fallback` — deepseek_config の thinking が
-  enabled 以外をすべて false に丸め警告なし
-  （src/bin/cordis_composition_ui.rs:155-159）。
+- [x] `thinking-string-silent-fallback` — enabled / disabled のみを受理し
+  未知値はデフォルト維持とする契約を明記、境界テスト追加（round 290）。
 - [x] `prompt-draft-untrimmed-send` — prompt_agent_ui の take_prompt は trim して
   送信するよう修正＋回帰テスト。prompt_ui は IME 確定の trailing space を
   保持する既存契約のため untrimmed を維持し doc 明記（round 288）。

@@ -675,6 +675,14 @@ mod tests {
 
         let llm = deepseek_config(&config_of("llm-deepseek"));
         assert!(llm.thinking, "`thinking: enabled` must become true");
+        let value_with = |text: &str| {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("thinking".to_string(), Value::String(text.to_string()));
+            Value::Object(map)
+        };
+        assert!(!deepseek_config(&value_with("ENABLED")).thinking);
+        assert!(!deepseek_config(&value_with("yes")).thinking);
+        assert!(deepseek_config(&value_with("enabled")).thinking);
 
         let fallback = std::path::Path::new("/tmp/fallback-sessions");
         let root = session_root(&config_of("session-persistence-jsonl"), fallback);
