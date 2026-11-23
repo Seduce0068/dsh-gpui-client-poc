@@ -88,6 +88,8 @@ struct TitlePanel {
 impl TitlePanel {
     /// Apply the async build result on the UI thread. This is the single
     /// success/failure branch used by the spawned build task and by tests.
+    /// A failed build clears the previous rows so stale data is never shown
+    /// alongside the error (swarm review R17-DUAL2-03).
     fn apply_build_result(&mut self, result: Result<Vec<TitleRow>, String>) {
         match result {
             Ok(rows) => {
