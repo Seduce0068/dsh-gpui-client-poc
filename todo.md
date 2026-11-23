@@ -21,6 +21,57 @@ verified:
 
 ## 未着手
 
+### 優先度: 高（swarm コンボ 2026-11-23 round 283 で追加）
+
+- [ ] `toggle-unload-failure-loses-fiber` — toggle_once が fiber を
+  take した後に unload し、失敗時に state.fiber が None のままになる
+  （src/bin/cordis_composition_toggle_ui.rs:105-111）。失敗時に差し戻す。
+- [ ] `README-stale-cordis-version` — README.md:179 が v0.255.0、
+  Cargo.toml:10 と README.md:67 は v0.377.0。版数照合 gate も追加。
+- [ ] `README-stale-stream-variants` — README.md:183-189 が
+  ToolCall / ToolCallUpdate / AgentThoughtChunk 未対応と記載するが
+  実装済み（src/bin/acp_stream_ui.rs:193-224）。
+  UsageUpdate のみ ignored と明記。
+- [ ] `README-stale-partial-mount` — README.md:178 が
+  「6エントリすべて起動」と記載するが部分 mount + failed/skipped
+  レポートへ変更済み。
+
+### 優先度: 中（swarm コンボ 2026-11-23 round 283 で追加）
+
+- [ ] `prompt-input-validation` — DSH_ACP_PROMPT / CLI prompt に
+  trim・長さ上限・制御文字検証がなく空 prompt が child へ渡る
+  （src/bin/acp_stream_ui.rs:121,385,486）。
+- [ ] `approval-env-fail-open` — DSH_GPUI_APPROVAL_ANSWER の不正値が
+  黙って Allow にフォールバック（src/bin/cordis_permission_ui.rs:31,53-58）。
+  Deny/Ask に倒すか doc 明記。
+- [ ] `composition-negative-config-clamp` — message_feedback_config /
+  tool_subagent_config が負値を 0 に丸めて検証をすり抜ける
+  （src/bin/cordis_composition_ui.rs:165-186）。
+- [ ] `prompt-agent-finish-state` — finish が reply スロット無しでも
+  成功扱いし、fail の error をクリアしない
+  （src/bin/cordis_prompt_agent_ui.rs:181-186）。
+- [ ] `todo-ui-error-not-persisted` — cordis_todo_ui::write の失敗が
+  status にしか出ず次の操作で消える（src/bin/cordis_todo_ui.rs:29-44）。
+  専用 error フィールドを追加。
+
+### 優先度: 低（swarm コンボ 2026-11-23 round 283 で追加）
+
+- [ ] `acp-patch-empty-path` — DSH_ACP_PATCH の空文字が未設定扱いで
+  指定ミスが黙って無視される（src/bin/acp_llm_probe.rs:532）。
+- [ ] `stream-tag-serialization-hidden` — tag_from_json が
+  serde_json::to_value 失敗を unknown に丸め cordis-rs の型エラーを隠す
+  （src/bin/acp_stream_ui.rs:237-251）。
+- [ ] `credential-env-non-utf8` — composition/entries toggle UI が
+  std::env::var().ok() で非 UTF-8 環境変数を未設定と誤判定
+  （src/bin/cordis_composition_ui.rs:390 等）。
+- [ ] `permission-error-flattened` — switch エラーが ERROR 文字列に
+  平坦化されエラー型が失われる（src/bin/cordis_permission_ui.rs:251-255）。
+- [ ] `thinking-string-silent-fallback` — deepseek_config の thinking が
+  enabled 以外をすべて false に丸め警告なし
+  （src/bin/cordis_composition_ui.rs:155-159）。
+- [ ] `prompt-draft-untrimmed-send` — submit が trim で空判定する一方、
+  未 trim の draft を送信（src/bin/cordis_prompt_ui.rs:239-245）。
+
 ### 優先度: 高
 
 - [x] `verify-smoke-false-positive` / `verify-window-not-observed` — smoke を spectacle +
