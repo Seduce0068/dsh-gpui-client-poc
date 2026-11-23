@@ -167,7 +167,14 @@ fn message_feedback_config(config: &Value) -> MessageFeedbackConfig {
     if let Some(bytes) =
         config_i64(config, "maxNoteBytes").or_else(|| config_i64(config, "max_note_bytes"))
     {
-        parsed.max_note_bytes = bytes.max(0) as usize;
+        // A negative or out-of-range value is a config typo; keep the default
+        // instead of clamping to zero, which MessageFeedback rejects
+        // (swarm review round 283).
+        if let Ok(bytes) = usize::try_from(bytes) {
+            if bytes > 0 {
+                parsed.max_note_bytes = bytes;
+            }
+        }
     }
     parsed
 }
@@ -183,7 +190,9 @@ fn tool_subagent_config(config: &Value) -> ToolSubagentConfig {
     }
     if let Some(depth) = config_i64(config, "maxDepth").or_else(|| config_i64(config, "max_depth"))
     {
-        parsed.max_depth = depth.max(0) as usize;
+        if let Ok(depth) = usize::try_from(depth) {
+            parsed.max_depth = depth;
+        }
     }
     parsed
 }
@@ -650,6 +659,22 @@ mod tests {
             .with_env_value("DSH_SNAPSHOT_FEEDBACK", "1");
         Composition::parse_with_vars(include_str!("../../fixtures/text-turn.cordis.yml"), &vars)
             .unwrap()
+    }
+
+    #[test]
+    fn negative_numeric_config_keeps_defaults() {
+        let config_with = |key: &str, value: i64| {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert(key.to_string(), Value::Integer(value));
+            Value::Object(map)
+        };
+        let feedback = message_feedback_config(&config_with("maxNoteBytes", -1));
+        assert_eq!(
+            feedback.max_note_bytes,
+            MessageFeedbackConfig::default().max_note_bytes
+        );
+        let subagent = tool_subagent_config(&config_with("maxDepth", -5));
+        assert_eq!(subagent.max_depth, 1);
     }
 
     #[test]

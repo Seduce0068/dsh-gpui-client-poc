@@ -42,9 +42,8 @@ verified:
 - [x] `approval-env-fail-open` — 未設定は Allow 維持、不正値（タイポ等）は
   Ask に fail-closed（stderr 警告付き）。純粋ヘルパー from_env_result を
   追加して境界テスト（未設定/正常値/タイポ/空）を固定（round 285）。
-- [ ] `composition-negative-config-clamp` — message_feedback_config /
-  tool_subagent_config が負値を 0 に丸めて検証をすり抜ける
-  （src/bin/cordis_composition_ui.rs:165-186）。
+- [x] `composition-negative-config-clamp` — 負値はデフォルト維持に変更し
+  usize::try_from で overflow も拒否、境界テスト追加（round 291）。
 - [ ] `prompt-agent-finish-state` — finish が reply スロット無しでも
   成功扱いし、fail の error をクリアしない
   （src/bin/cordis_prompt_agent_ui.rs:181-186）。
