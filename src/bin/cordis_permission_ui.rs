@@ -114,6 +114,28 @@ fn build_answerer(
     })
 }
 
+/// Which layer failed during a preset switch, kept for UI display so a demo
+/// operator can tell a runtime/service/preset failure apart (swarm review
+/// round 283). The original error message is preserved as a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwitchErrorKind {
+    Runtime,
+    Service,
+    Preset,
+}
+
+impl SwitchErrorKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Runtime => "runtime",
+            Self::Service => "service",
+            Self::Preset => "preset",
+        }
+    }
+}
+
+type SwitchError = (SwitchErrorKind, String);
+
 struct PermissionState {
     preset: String,
     approval: String,
@@ -129,19 +151,23 @@ struct PermissionPanel {
 }
 
 impl PermissionPanel {
-    fn switch(&mut self, preset: &str) -> Result<(), String> {
+    fn switch(&mut self, preset: &str) -> Result<(), SwitchError> {
         // Recreate the runtime pieces per switch so the policy is fresh.
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| (SwitchErrorKind::Runtime, error.to_string()))?;
         runtime.block_on(async {
             let ctx = Context::root("permission-ui");
-            let (registry, pipeline) = provide_tools(&ctx).await.map_err(|e| e.to_string())?;
-            let approval = provide_approval(&ctx).await.map_err(|e| e.to_string())?;
+            let (registry, pipeline) = provide_tools(&ctx)
+                .await
+                .map_err(|e| (SwitchErrorKind::Service, e.to_string()))?;
+            let approval = provide_approval(&ctx)
+                .await
+                .map_err(|e| (SwitchErrorKind::Service, e.to_string()))?;
             let presets = provide_permission_presets(&ctx)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| (SwitchErrorKind::Service, e.to_string()))?;
             presets.bind_approval(approval.clone());
             pipeline.with_approval(approval.clone());
 
@@ -162,7 +188,9 @@ impl PermissionPanel {
                 }),
             ));
 
-            let current = presets.switch(preset).map_err(|e| e.to_string())?;
+            let current = presets
+                .switch(preset)
+                .map_err(|e| (SwitchErrorKind::Preset, e.to_string()))?;
             let result = pipeline
                 .run(&registry, "bash", tool_args, ToolExecContext::agent("ui"))
                 .await;
@@ -255,9 +283,9 @@ impl Render for PermissionPanel {
                     .text_color(rgb(0xe8e8ef))
                     .child(SharedString::from(format!("switch to {name}")))
                     .on_click(cx.listener(move |panel, _event, _window, _cx| {
-                        if let Err(error) = panel.switch(&name) {
+                        if let Err((kind, error)) = panel.switch(&name) {
                             let mut state = panel.state.lock().expect("permission state poisoned");
-                            state.result = format!("ERROR: {error}");
+                            state.result = format!("ERROR[{}]: {error}", kind.label());
                         }
                     })),
             );
@@ -318,6 +346,13 @@ mod tests {
             AnswerMode::from_env_result(Ok("".to_string()), ANSWER_ENV),
             AnswerMode::Ask
         );
+    }
+
+    #[test]
+    fn switch_error_kinds_have_distinct_labels() {
+        assert_eq!(super::SwitchErrorKind::Runtime.label(), "runtime");
+        assert_eq!(super::SwitchErrorKind::Service.label(), "service");
+        assert_eq!(super::SwitchErrorKind::Preset.label(), "preset");
     }
 
     #[test]

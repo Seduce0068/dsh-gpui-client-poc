@@ -61,8 +61,9 @@ verified:
 - [x] `credential-env-non-utf8` — 両 UI の credential getter を var_os +
   to_string_lossy に変更し、非 UTF-8 値を未設定と誤判定しないようにした
   （round 293）。
-- [ ] `permission-error-flattened` — switch エラーが ERROR 文字列に
-  平坦化されエラー型が失われる（src/bin/cordis_permission_ui.rs:251-255）。
+- [x] `permission-error-flattened` — switch の戻り値を (SwitchErrorKind, String)
+  に変更し runtime / service / preset の発生層をタグ付け、ERROR[kind] 表示に
+  変更。ラベルの回帰テスト追加（round 296）。
 - [x] `thinking-string-silent-fallback` — enabled / disabled のみを受理し
   未知値はデフォルト維持とする契約を明記、境界テスト追加（round 290）。
 - [x] `prompt-draft-untrimmed-send` — prompt_agent_ui の take_prompt は trim して
