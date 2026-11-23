@@ -602,4 +602,16 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn tool_error_output_is_marked_as_error() {
+        // The UI hides failing outputs only when is_error() is true; a false
+        // negative would show an error as a normal result (swarm review
+        // R16-DUAL04).
+        let failure = ToolError::Execution("boom".to_string());
+        let output = ToolOutput::from_error(&failure);
+        assert!(output.is_error());
+        let ok = ToolOutput::text("fine");
+        assert!(!ok.is_error());
+    }
 }
