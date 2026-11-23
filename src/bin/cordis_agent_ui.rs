@@ -288,8 +288,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use cordis_rs::core_services::{
-        CompactionConfig, LlmRequest, SessionStore, TokenMeter, ToolDefinition, ToolError,
-        ToolExecContext, ToolOutput,
+        APPROVAL_DENIED_MARKER, CompactionConfig, LlmRequest, PATH_ESCAPE_MARKER, SessionStore,
+        TokenMeter, ToolDefinition, ToolError, ToolExecContext, ToolOutput,
     };
     use cordis_rs::events::BoxFuture;
 
@@ -379,7 +379,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&denied, ToolError::Execution(msg) if msg.contains("denied by approval policy")),
+            matches!(&denied, ToolError::Execution(msg) if msg.contains(APPROVAL_DENIED_MARKER)),
             "unexpected error: {denied}"
         );
         assert_eq!(body_ran.load(Ordering::SeqCst), 0);
@@ -547,7 +547,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&escaped, ToolError::Execution(msg) if msg.contains("path escapes filesystem root")),
+            matches!(&escaped, ToolError::Execution(msg) if msg.contains(PATH_ESCAPE_MARKER)),
             "unexpected error: {escaped}"
         );
     }
