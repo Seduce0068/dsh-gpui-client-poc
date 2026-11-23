@@ -413,6 +413,36 @@ fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
         .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
 }
 
+/// Stable prefixes for ACP startup failures. Centralising them lets the
+/// mapping be tested without spawning the external `dsh` process (swarm
+/// review R17-DUAL2-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupErrorKind {
+    Runtime,
+    Resolution,
+    Spawn,
+    NoStdio,
+}
+
+impl StartupErrorKind {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Runtime => "runtime error",
+            Self::Resolution => "dsh resolution error",
+            Self::Spawn => "spawn error",
+            Self::NoStdio => "no stdio",
+        }
+    }
+
+    fn message(self, detail: &str) -> String {
+        if detail.is_empty() {
+            self.prefix().to_string()
+        } else {
+            format!("{}: {}", self.prefix(), detail)
+        }
+    }
+}
+
 fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: String) {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -422,7 +452,7 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: Str
             Ok(runtime) => runtime,
             Err(error) => {
                 buffer.lock().expect("stream buffer poisoned").status =
-                    format!("runtime error: {error}");
+                    StartupErrorKind::Runtime.message(&error.to_string());
                 signal.changed();
                 return;
             }
@@ -434,7 +464,7 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: Str
                 Ok(parts) => parts,
                 Err(error) => {
                     buffer.lock().expect("stream buffer poisoned").status =
-                        format!("dsh resolution error: {error}");
+                        StartupErrorKind::Resolution.message(&error.to_string());
                     signal.changed();
                     return;
                 }
@@ -448,13 +478,14 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: Str
                 Ok(child) => child,
                 Err(error) => {
                     buffer.lock().expect("stream buffer poisoned").status =
-                        format!("spawn error: {error}");
+                        StartupErrorKind::Spawn.message(&error.to_string());
                     signal.changed();
                     return;
                 }
             };
             let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-                buffer.lock().expect("stream buffer poisoned").status = "no stdio".to_string();
+                buffer.lock().expect("stream buffer poisoned").status =
+                    StartupErrorKind::NoStdio.message("");
                 signal.changed();
                 return;
             };
@@ -567,6 +598,17 @@ impl StreamPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_error_prefixes_are_stable() {
+        use StartupErrorKind::*;
+        assert_eq!(Runtime.prefix(), "runtime error");
+        assert_eq!(Resolution.prefix(), "dsh resolution error");
+        assert_eq!(Spawn.prefix(), "spawn error");
+        assert_eq!(NoStdio.prefix(), "no stdio");
+        assert_eq!(Spawn.message("boom"), "spawn error: boom");
+        assert_eq!(NoStdio.message(""), "no stdio");
+    }
     use agent_client_protocol::schema::{
         ConfigOptionUpdate, ContentChunk, TextContent, ToolCall, ToolCallStatus, ToolCallUpdate,
         ToolCallUpdateFields,
