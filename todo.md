@@ -23,9 +23,9 @@ verified:
 
 ### 優先度: 高（swarm コンボ 2026-11-23 round 283 で追加）
 
-- [ ] `toggle-unload-failure-loses-fiber` — toggle_once が fiber を
-  take した後に unload し、失敗時に state.fiber が None のままになる
-  （src/bin/cordis_composition_toggle_ui.rs:105-111）。失敗時に差し戻す。
+- [x] `toggle-unload-failure-loses-fiber` — unload 失敗時に fiber を
+  state へ差し戻すよう修正（正常系 roundtrip テストは既存、
+  src/bin/cordis_composition_toggle_ui.rs:105-123、round 286）。
 - [x] `README-stale-cordis-version` — README.md の版数表記を v0.377.0 に
   統一（2026-11-23、round 284）。版数照合 gate 追加は残タスク。
 - [x] `README-stale-stream-variants` — 実装済み4 variant を描画済みと

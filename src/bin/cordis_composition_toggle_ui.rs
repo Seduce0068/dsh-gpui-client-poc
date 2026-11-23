@@ -105,10 +105,15 @@ impl TogglePanel {
 async fn toggle_once(state: &Arc<Mutex<ToggleState>>) -> Result<(), String> {
     let fiber = state.lock().expect("toggle state poisoned").fiber.take();
     if let Some(fiber) = fiber {
-        fiber
-            .unload()
-            .await
-            .map_err(|error| unload_error_message(&error.to_string()))
+        if let Err(error) = fiber.unload().await {
+            // Keep the fiber on a failed unload so the UI state stays truthful
+            // (swarm review round 283); otherwise a retry would mount a second
+            // fiber while the first one's effects are still live.
+            state.lock().expect("toggle state poisoned").fiber = Some(fiber);
+            Err(unload_error_message(&error.to_string()))
+        } else {
+            Ok(())
+        }
     } else {
         let ctx = state.lock().expect("toggle state poisoned").ctx.clone();
         match Fiber::mount(
