@@ -55,9 +55,9 @@ verified:
 
 - [x] `acp-patch-empty-path` — resolve_patch_path を追加し、空文字は未設定、
   非空で存在しないパスは明示エラーに変更。境界テスト追加（round 289）。
-- [ ] `stream-tag-serialization-hidden` — tag_from_json が
-  serde_json::to_value 失敗を unknown に丸め cordis-rs の型エラーを隠す
-  （src/bin/acp_stream_ui.rs:237-251）。
+- [x] `stream-tag-serialization-hidden` — tag_from_json が Err を受け取り
+  stderr に理由を出し unserializable タグを返すよう修正、回帰テスト追加
+  （round 292）。
 - [ ] `credential-env-non-utf8` — composition/entries toggle UI が
   std::env::var().ok() で非 UTF-8 環境変数を未設定と誤判定
   （src/bin/cordis_composition_ui.rs:390 等）。

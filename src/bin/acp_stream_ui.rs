@@ -235,20 +235,31 @@ fn render_update_line(update: &SessionUpdate) -> String {
 /// Extract the wire-level `sessionUpdate` tag without depending on a variant
 /// being available in this crate's feature set.
 fn update_kind(update: &SessionUpdate) -> String {
-    tag_from_json(serde_json::to_value(update).ok().as_ref(), "sessionUpdate")
+    tag_from_json(serde_json::to_value(update), "sessionUpdate")
 }
 
 /// Extract the wire-level `type` tag of a content block.
 fn content_kind(content: &ContentBlock) -> String {
-    tag_from_json(serde_json::to_value(content).ok().as_ref(), "type")
+    tag_from_json(serde_json::to_value(content), "type")
 }
 
-fn tag_from_json(value: Option<&serde_json::Value>, key: &str) -> String {
-    value
-        .and_then(|json| json.get(key))
-        .and_then(|tag| tag.as_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| "<unknown>".to_owned())
+fn tag_from_json(
+    value: std::result::Result<serde_json::Value, serde_json::Error>,
+    key: &str,
+) -> String {
+    match value {
+        Ok(json) => json
+            .get(key)
+            .and_then(|tag| tag.as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "<unknown>".to_owned()),
+        Err(error) => {
+            // Keep the serialization failure visible instead of silently
+            // hiding a cordis-rs payload mismatch (swarm review round 283).
+            eprintln!("cannot serialize {key} for display: {error}");
+            format!("<unserializable: {key}>")
+        }
+    }
 }
 
 fn ignored_content(update: &str, content: &ContentBlock) -> String {
@@ -614,6 +625,17 @@ mod tests {
         assert!(line.contains("[tool_call_update id=call-1]"), "{line}");
         assert!(line.contains("status=Completed"), "{line}");
         assert!(line.contains("title=read file"), "{line}");
+    }
+
+    #[test]
+    fn tag_from_json_reports_serialization_failure() {
+        // A normal value still returns its tag.
+        let ok = serde_json::json!({ "sessionUpdate": "foo" });
+        assert_eq!(super::tag_from_json(Ok(ok), "sessionUpdate"), "foo");
+        // A serialization error is no longer hidden as "<unknown>".
+        let err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let tag = super::tag_from_json(Err(err), "sessionUpdate");
+        assert!(tag.contains("unserializable"), "{tag}");
     }
 
     #[test]
