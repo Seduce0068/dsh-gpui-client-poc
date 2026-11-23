@@ -166,7 +166,9 @@ impl PromptAgentPanel {
         if self.busy || self.draft.trim().is_empty() {
             return None;
         }
-        let prompt = self.draft.clone();
+        // Send the trimmed text: blank-check and submission must agree
+        // (swarm review round 283).
+        let prompt = self.draft.trim().to_owned();
         self.draft.clear();
         self.prompts.push(SharedString::from(prompt.clone()));
         self.replies.push(SharedString::from("(running…)"));
@@ -310,6 +312,15 @@ mod tests {
         let run = agent.run("hello agent").await.unwrap();
         assert_eq!(run.final_text, "hello agent");
         assert_eq!(run.steps.len(), 1);
+    }
+
+    #[test]
+    fn take_prompt_sends_trimmed_text() {
+        let mut panel = PromptAgentPanel::new();
+        for ch in "  hi  ".chars() {
+            panel.push_char(ch);
+        }
+        assert_eq!(panel.take_prompt().unwrap(), "hi");
     }
 
     #[test]

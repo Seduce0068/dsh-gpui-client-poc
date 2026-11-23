@@ -67,8 +67,9 @@ verified:
 - [ ] `thinking-string-silent-fallback` — deepseek_config の thinking が
   enabled 以外をすべて false に丸め警告なし
   （src/bin/cordis_composition_ui.rs:155-159）。
-- [ ] `prompt-draft-untrimmed-send` — submit が trim で空判定する一方、
-  未 trim の draft を送信（src/bin/cordis_prompt_ui.rs:239-245）。
+- [x] `prompt-draft-untrimmed-send` — prompt_agent_ui の take_prompt は trim して
+  送信するよう修正＋回帰テスト。prompt_ui は IME 確定の trailing space を
+  保持する既存契約のため untrimmed を維持し doc 明記（round 288）。
 
 ### 優先度: 高
 

@@ -240,6 +240,8 @@ impl PromptPanel {
         if self.draft.trim().is_empty() {
             return;
         }
+        // Keep the untrimmed draft on submit: a trailing space from an IME
+        // confirmation is part of the accepted text (see IME regression tests).
         self.submitted.push(SharedString::from(self.draft.clone()));
         self.draft.clear();
     }
