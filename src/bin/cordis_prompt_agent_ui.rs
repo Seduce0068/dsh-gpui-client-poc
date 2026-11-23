@@ -184,6 +184,10 @@ impl PromptAgentPanel {
         if let Some(slot) = self.replies.last_mut() {
             *slot = SharedString::from(reply);
         }
+        // A completed reply clears a previous error banner; `fail` sets its
+        // own error after calling finish, so its banner survives (swarm review
+        // round 283).
+        self.error = None;
         self.busy = false;
     }
 
@@ -312,6 +316,20 @@ mod tests {
         let run = agent.run("hello agent").await.unwrap();
         assert_eq!(run.final_text, "hello agent");
         assert_eq!(run.steps.len(), 1);
+    }
+
+    #[test]
+    fn success_after_failure_clears_error_banner() {
+        let mut panel = PromptAgentPanel::new();
+        for ch in "hi".chars() {
+            panel.push_char(ch);
+        }
+        assert!(panel.take_prompt().is_some());
+        panel.fail("boom".to_string());
+        assert!(panel.error.is_some());
+        panel.finish("recovered".to_string());
+        assert!(panel.error.is_none());
+        assert_eq!(panel.replies.last().unwrap().to_string(), "recovered");
     }
 
     #[test]

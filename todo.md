@@ -44,9 +44,9 @@ verified:
   追加して境界テスト（未設定/正常値/タイポ/空）を固定（round 285）。
 - [x] `composition-negative-config-clamp` — 負値はデフォルト維持に変更し
   usize::try_from で overflow も拒否、境界テスト追加（round 291）。
-- [ ] `prompt-agent-finish-state` — finish が reply スロット無しでも
-  成功扱いし、fail の error をクリアしない
-  （src/bin/cordis_prompt_agent_ui.rs:181-186）。
+- [x] `prompt-agent-finish-state` — finish が完了時に error バナーを
+  クリアするよう修正（fail 自身の error は finish の後に設定されるため
+  保持）、成功後の失败表示残留を防ぐ回帰テスト追加（round 294）。
 - [ ] `todo-ui-error-not-persisted` — cordis_todo_ui::write の失敗が
   status にしか出ず次の操作で消える（src/bin/cordis_todo_ui.rs:29-44）。
   専用 error フィールドを追加。
