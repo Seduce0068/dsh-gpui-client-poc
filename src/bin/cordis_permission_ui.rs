@@ -85,6 +85,16 @@ impl AnswerMode {
     }
 }
 
+/// Render untrusted text on a single UI line. Control characters (including
+/// newlines) become spaces so a tool description cannot forge extra rows;
+/// normal text is unchanged (swarm review R21-CTL02).
+fn display_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
 /// What the answerer observed and returned, surfaced in the UI.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct ApprovalTrace {
@@ -254,20 +264,20 @@ impl Render for PermissionPanel {
                 "answer policy: {} ({ANSWER_ENV}=allow|deny|ask)",
                 self.answer_mode.as_str()
             ))))
-            .child(
-                div()
-                    .text_sm()
-                    .child(SharedString::from(format!("tool call args: {call_args}"))),
-            )
+            .child(div().text_sm().child(SharedString::from(format!(
+                "tool call args: {}",
+                display_text(&call_args)
+            ))))
             .child(div().text_sm().child(SharedString::from(format!(
                 "answerer saw: {} — {} | args: {}",
-                trace.action, trace.description, trace.tool_args
+                display_text(&trace.action),
+                display_text(&trace.description),
+                display_text(&trace.tool_args)
             ))))
-            .child(
-                div()
-                    .text_sm()
-                    .child(SharedString::from(format!("answerer decision: {decision}"))),
-            )
+            .child(div().text_sm().child(SharedString::from(format!(
+                "answerer decision: {}",
+                display_text(&decision)
+            ))))
             .child(
                 div()
                     .text_sm()
@@ -323,6 +333,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_text_flattens_control_characters() {
+        // A model-supplied description cannot forge extra UI rows
+        // (swarm review R21-CTL02).
+        assert_eq!(super::display_text("a\nb"), "a b");
+        assert_eq!(super::display_text("a\t\u{1b}b"), "a  b");
+        assert_eq!(super::display_text("plain text"), "plain text");
+    }
 
     fn sample_request() -> ApprovalRequest {
         ApprovalRequest::new("tool:bash", "Execute tool bash with the supplied arguments")
