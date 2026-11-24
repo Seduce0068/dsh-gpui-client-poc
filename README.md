@@ -108,7 +108,7 @@ DSH の `read_image` ツールで開き、エージェント自身が実描画�
 
 ```bash
 echo '=== ビルド ==='
-cd /home/koppe/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc
+cd ${HOME}/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc
 cargo build --bins
 
 echo '=== 証跡取得（各デモの全画面 PNG を EVIDENCE_DIR へ） ==='

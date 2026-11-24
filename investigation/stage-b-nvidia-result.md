@@ -20,13 +20,13 @@ ACP 経由の本文取得と stop reason を実証した。
 
 ## やったこと
 
-1. `https://integrate.api.nvidia.com/v1/models` を読み取り専用で確認し、
-   `NVIDIA_API_KEY` が利用可能で `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`
+1. `<PROVIDER_MODELS_URL>` を読み取り専用で確認し、
+   `<PROVIDER_API_KEY_ENV>` が利用可能で `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`
    が存在することを確認。キー値はレポートにも設定にも書いていない。
 2. `fixtures/acp-nvidia-free.patch.yml` を追加。`dsh --profile acp` に
    `--patch` overlay として渡し、次を上書きした。
    - `llm-pi-ai`: `providers.nvidia`（`api: openai-completions`,
-     `baseURL: https://integrate.api.nvidia.com/v1`, `apiKeyEnv: NVIDIA_API_KEY`）
+     `baseURL: <PROVIDER_BASE_URL>`, `apiKeyEnv: <PROVIDER_API_KEY_ENV>`）
    - `agent-default-model` と `acp`: `provider: nvidia` / 上記モデル
 3. `acp_llm_probe` と `acp_prompt_probe` に `DSH_ACP_PATCH` 環境変数を追加。
    設定値がある場合だけ `--patch <path>` を渡し、未設定なら従来どおり。

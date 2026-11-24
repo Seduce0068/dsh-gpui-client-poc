@@ -748,8 +748,8 @@ mod tests {
     #[test]
     fn state_dirs_use_stable_user_id_and_pid_scratch() {
         let base = test_base("dirs");
-        let dirs = state_dirs_for(&base, "cordis-entries-toggle", "koppe", 4321);
-        assert_eq!(dirs.stable, base.join("cordis-entries-toggle/user-koppe"));
+        let dirs = state_dirs_for(&base, "cordis-entries-toggle", "testuser", 4321);
+        assert_eq!(dirs.stable, base.join("cordis-entries-toggle/user-testuser"));
         assert_eq!(dirs.process, base.join("cordis-entries-toggle/pid-4321"));
         assert!(dirs.stable.starts_with(&base));
         assert!(dirs.process.starts_with(&base));
@@ -761,8 +761,8 @@ mod tests {
         // A restart is exactly this: same app + user, new pid. The enable/disable
         // choices saved by the old process must still be loaded by the new one.
         let base = test_base("restart");
-        let before = state_dirs_for(&base, "cordis-entries-toggle", "koppe", 1000);
-        let after = state_dirs_for(&base, "cordis-entries-toggle", "koppe", 2000);
+        let before = state_dirs_for(&base, "cordis-entries-toggle", "testuser", 1000);
+        let after = state_dirs_for(&base, "cordis-entries-toggle", "testuser", 2000);
         assert_eq!(before.stable, after.stable);
         assert_ne!(before.process, after.process);
 
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn user_id_is_sanitized_to_one_safe_component() {
-        assert_eq!(sanitize_id_component("koppe"), "koppe");
+        assert_eq!(sanitize_id_component("testuser"), "testuser");
         assert_eq!(sanitize_id_component("a/b c"), "a_b_c");
         assert_eq!(sanitize_id_component("../../etc"), "etc");
         assert_eq!(sanitize_id_component(".."), "unknown");

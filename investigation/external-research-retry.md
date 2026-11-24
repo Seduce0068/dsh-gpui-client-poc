@@ -26,7 +26,7 @@ status: completed
 
 - `web_search`: **利用不可**。DeepSeek API が
   `HTTP 402: Insufficient Balance`（request_id:
-  `ee2c0794-e6b0-4d74-9d89-b5de1b27b189`）を返した。
+  `<request-id>`）を返した。
   既存ラウンドと同じ障害。
 - `web_fetch`: **利用可**。crates.io API が HTTP 200 で応答した。
   既存ラウンドの `TypeError: fetch failed` は今回は再現しなかった。
@@ -145,5 +145,5 @@ status: completed
 - GitHub releases（仕様）: <https://github.com/agentclientprotocol/agent-client-protocol/releases>
 - GitHub releases（tokio）: <https://github.com/tokio-rs/tokio/releases>
 - npm registry: <https://registry.npmjs.org/@agentclientprotocol/sdk/latest>
-- ローカル DSH: `/home/koppe/.npm-global/lib/node_modules/@deepseek-ai/dsh/package.json`
-- ローカル SDK: `/home/koppe/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@agentclientprotocol/sdk/package.json`
+- ローカル DSH: `${HOME}/.npm-global/lib/node_modules/@deepseek-ai/dsh/package.json`
+- ローカル SDK: `${HOME}/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@agentclientprotocol/sdk/package.json`
