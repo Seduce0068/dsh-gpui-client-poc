@@ -243,6 +243,9 @@ fn content_kind(content: &ContentBlock) -> String {
     tag_from_json(serde_json::to_value(content), "type")
 }
 
+/// Render the wire tag for `key`. Unknown or non-string tags become
+/// `<unknown>`; a serialization failure becomes `<unserializable: {key}>`
+/// (swarm review R20-DUAL5-01).
 fn tag_from_json(
     value: std::result::Result<serde_json::Value, serde_json::Error>,
     key: &str,
@@ -667,6 +670,20 @@ mod tests {
         assert!(line.contains("[tool_call_update id=call-1]"), "{line}");
         assert!(line.contains("status=Completed"), "{line}");
         assert!(line.contains("title=read file"), "{line}");
+    }
+
+    #[test]
+    fn tag_from_json_renders_unknown_tags() {
+        // A missing tag and a non-string tag both render as `<unknown>`
+        // (swarm review R20-DUAL5-01).
+        assert_eq!(
+            super::tag_from_json(Ok(serde_json::json!({})), "sessionUpdate"),
+            "<unknown>"
+        );
+        assert_eq!(
+            super::tag_from_json(Ok(serde_json::json!({ "type": 42 })), "type"),
+            "<unknown>"
+        );
     }
 
     #[test]
