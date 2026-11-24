@@ -276,7 +276,7 @@ impl Render for PermissionPanel {
             ))))
             .child(div().text_sm().child(SharedString::from(format!(
                 "answerer decision: {}",
-                display_text(&decision)
+                display_text(decision)
             ))))
             .child(
                 div()
