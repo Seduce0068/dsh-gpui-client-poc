@@ -196,9 +196,11 @@ cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `
 
 ## ライセンス
 
-`AGPL-3.0-or-later`（[LICENSE](LICENSE) を参照）。上流 gpui は Apache-2.0 ですが、
-本 PoC のコードは `AGPL-3.0-or-later` で公開します。以前の MIT 本文は
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に保持しています。
+`AGPL-3.0-or-later`（[LICENSE](LICENSE) を参照）。上流 gpui と
+`agent-client-protocol` は Apache-2.0 ですが、本 PoC のコードは
+`AGPL-3.0-or-later` で公開します。以前の MIT 本文と Apache-2.0 依存の
+著作権表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に、
+Apache-2.0 本文は [LICENSE-APACHE.txt](LICENSE-APACHE.txt) に保持しています。
 
 ## 方針
 
