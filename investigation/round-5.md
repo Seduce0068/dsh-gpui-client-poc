@@ -140,7 +140,7 @@ cross-review の `generated` が実 mtime より未来（round-2 +5分, round-3 
 **しかし起動中に `timeout 15 spectacle -b -n -o /tmp/r5-todo-visible.png` を撮り `read_image` でエージェント自身が画像を読んだところ、Wayland ネイティブウィンドウが実際に写っていた**: タイトル `cordis-rs x GPUI — tool-todo`、本文 `No todos yet. Use the buttons below to call todo_write.`、ボタン `+ prepare step / start / finish / clear`、下部ステータス `Ready`。**README:71-84 の「kdotool が無く Wayland ネイティブのウィンドウは自動列挙できず、目視はユーザー確認が必要」はもはや正確ではない**。spectacle + 画像読み取りでエージェント自身が GUI 目視検証が可能。PNG は確認後削除。
 
 ### OBS-4 `spectacle-screenshot-reproduced` [改善/medium/no]
-`timeout 20 spectacle -b -n -o /tmp/r5-observe.png` → exit 0、3,482,587 bytes `PNG image data, 5120 x 1440, 8-bit/color RGBA`、sha256 `f79b24df...`、削除済み・残存なし（round-2 D-9 再現）。**注意**: 5120x1440 の全画面にはユーザーのブラウザ等も写るため、証跡共有時はマスキング/クロップ方針が必要（他画面内容は報告に含めず）。
+`timeout 20 spectacle -b -n -o /tmp/r5-observe.png` → exit 0、全画面（環境依存）の PNG（8-bit/color RGBA、寸法・サイズ・ハッシュは環境依存）、削除済み・残存なし（round-2 D-9 再現）。**注意**: 全画面にはユーザーのブラウザ等も写るため、証跡共有時はマスキング/クロップ方針が必要（他画面内容は報告に含めず）。
 
 ### OBS-5 `smoke-script-not-executed` [調査必要/medium/yes]
 `scripts/smoke-gui.sh` は静的読解のみ（指示により実実行中断）。12バイナリを `timeout 20` + `grep -q 'GPUI window created'` + `|| true` で成功判定、`ok: <bin>` を出力。mktemp ログを毎回削除し証跡が残らない。**「ok だが何も検証していない」典型**で描画内容・ボタン動作は未検証。実行結果は未確認なので断言しない。

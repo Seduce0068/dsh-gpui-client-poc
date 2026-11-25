@@ -82,7 +82,7 @@ README:109-113 はストリーミング未実装とするが commit 57dbc01/2a60
 `gdbus call ... org.kde.KWin.queryWindowInfo` → `GDBus.Error:org.kde.KWin.Error.UserCancel: User cancelled the query`。メソッドは存在するがユーザーがウィンドウをクリック選択する方式で**無人化不可**。`getWindowInfo` も window id 別途必要。
 
 ### D-9 `rv-spectacle-screenshot-works` [改善/high/no] ★Runtime Proof
-`spectacle -b -n -o /tmp/r2-verify-$$.png` → rc=0、`PNG image data, 5120 x 1440, 8-bit/color RGBA`、4,675,784 bytes（2560x1440 @180Hz ×2 と整合）。裏側は `org.kde.KWin.ScreenShot2` の `CaptureActiveScreen/CaptureWindow/CaptureArea`。**Wayland ネイティブ画面の非対話スクリーンショット証跡が今日から可能**。撮影後ファイルは削除済み。
+`spectacle -b -n -o /tmp/r2-verify-$$.png` → rc=0、全画面（環境依存）の PNG（8-bit/color RGBA、寸法・サイズは環境依存、複数モニタ構成と整合）。裏側は `org.kde.KWin.ScreenShot2` の `CaptureActiveScreen/CaptureWindow/CaptureArea`。**Wayland ネイティブ画面の非対話スクリーンショット証跡が今日から可能**。撮影後ファイルは削除済み。
 
 ### D-10 `rv-portal-input-injection` [調査必要/medium/no]
 `gdbus introspect ... /org/freedesktop/portal/desktop` に `NotifyPointerMotion`, `NotifyPointerButton`, `NotifyKeyboardKeysym`, `NotifyTouchDown/Motion/Up`, `CreateSession`, `SelectDevices`, `Start`, `Screenshot` が存在。実注入は未試行。初回にユーザー承認ダイアログを伴う可能性（推測・要検証）。ボタン押下自動化の唯一のローカル経路候補。
