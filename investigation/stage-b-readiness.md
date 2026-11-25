@@ -102,7 +102,7 @@ INIT OK: agent_info=Some(Implementation { name: "deepseek-harness-acp", title: N
 SESSION OK: id=SessionId("f8a1f1c6-283f-427b-8e96-e2fcdc74249c")
 
 --- STDERR ---
-cwd = ${HOME}/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc
+cwd = <workspace>
 dsh: warning: 5 entries did not activate
 [llm-deepseek-api-key] model listing from <PROVIDER_MODELS_URL> loaded 2 model(s), skipped 0 row(s)
 SHUTDOWN = Exited

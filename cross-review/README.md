@@ -70,6 +70,6 @@ generated: 2026-11-17T19:36:00+09:00
 
 ## 対象リポジトリ
 
-- ローカル: `${HOME}/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc`
+- ローカル: `<workspace>`
 - GitHub: <https://github.com/Seduce0068/dsh-gpui-client-poc>
 - 主要技術: Rust / GPUI `=0.2.2` / ACP `0.11.1` / cordis-rs `v0.62.0`
