@@ -100,6 +100,11 @@ verified:
   共有モジュールへ抽出し全プローブで同一契約をテスト。
   根拠 `src/bin/acp_llm_probe.rs:98-168,175-190`, `src/bin/acp_prompt_probe.rs:28-96,325`,
   `src/bin/acp_stream_probe.rs:344` / RV-R1-AR01 / confirmed（大規模変更のため後段で実施）。
+   進捗 2026-11-28: S1（dsh 起動ヘルパー6つ）を `src/acp_launch.rs` へ抽出し6バイナリの
+   重複441行を削除。`cargo fmt --all -- --check` / `cargo check --bins` /
+   `cargo clippy --bins --all-targets -- -D warnings` / `cargo test --bins`
+   （249 passed, 0 failed）すべて exit 0、R4 指摘なし。S2=redaction/drain、
+   S3=reap_child、S4=patch、S5=emit/correlation/shutdown、S6=prompt は残課題。
 
 ### 優先度: 中（swarm-unlimited 2026-11-28 review+discovery で追加）
 
