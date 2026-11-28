@@ -211,7 +211,7 @@ docs エージェントの優先度: (1) D-14 非公開資料の未反映判断�
 
 ## E. `r1-acp-analysis`（ACP 統合深掘り、18項目）
 
-一次情報: ローカルの `agent-client-protocol 0.11.1` crate source（`~/.cargo/registry/src/.../agent-client-protocol-0.11.1`）と `agent-client-protocol-schema 0.12.0`（Cargo.lock:58-61）。Web 検索は失敗したため未使用（参照試行 URL: <https://github.com/agentclientprotocol/agent-client-protocol>）。
+一次情報: ローカルの `agent-client-protocol 0.11.1` crate source（`{cargo-registry}/src/.../agent-client-protocol-0.11.1`）と `agent-client-protocol-schema 0.12.0`（Cargo.lock:58-61）。Web 検索は失敗したため未使用（参照試行 URL: <https://github.com/agentclientprotocol/agent-client-protocol>）。
 
 ### E-1 `session-load-list-missing` [残タスク/high/no]
 全 probe が `initialize → session/new → session/prompt` のみ。crate には `LoadSessionRequest` (`session/load`) と `ListSessionsRequest` (`session/list`) が定義されているが未使用。session id は `println!` するだけで保存せず、再起動後に復元不可。静的セッション一覧と実 ACP セッションが結びつかない。
@@ -274,7 +274,7 @@ ACP エージェントの優先度: (1) E-7 9バリアントのドロップ、(2
 ## F. `r1-cordis-analysis`（cordis-rs 統合深掘り、16項目）
 
 一次情報: 当時 cordis-rs v0.62.0（commit 22290d9、ローカル checkout
-`~/.cargo/git/checkouts/cordis-rs-.../22290d9/`）。現行 Cargo.toml:10 は
+`{cargo-git-checkout}/cordis-rs-.../22290d9/`）。現行 Cargo.toml:10 は
 `v0.133.0`（2026-11-18）。全12 cordis バイナリ通読 + cordis-rs 実ソース照合。
 Web 検索不要と判断し未実施。
 

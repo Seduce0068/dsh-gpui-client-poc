@@ -149,7 +149,7 @@ cross-review の `generated` が実 mtime より未来（round-2 +5分, round-3 
 固定パスは静的に特定: `cordis_composition_ui.rs:203` の `remove_dir_all("/tmp/cordis-gpui")`、同 :56,:76、`cordis_entries_toggle_ui.rs:253,:160,:237`、`cordis_agent_ui.rs:46,52`。2つ同時起動の衝突は構造的に明白だが**実証は未実施**。
 
 ### OBS-7 `no-orphan-process-after-timeout` [問題なし/low/no]
-全実行後 `ps` で cordis_todo_ui / acp_probe / dsh --profile acp / spectacle の残存なし。（実行前からある `dsh --profile agentrouter` PID 3146590 は無関係で同一のまま。）
+全実行後 `ps` で cordis_todo_ui / acp_probe / dsh --profile acp / spectacle の残存なし。（実行前からある `dsh --profile agentrouter` PID {pid} は無関係で同一のまま。）
 
 **実行できなかったこと**: smoke-gui.sh 実実行（最大300秒、指示で中断）、2つ同時起動の実証（同）、kdotool 自動列挙（NOT FOUND、spectacle で代替実証）、他11 GUI デモの個別起動（時間制約）。
 

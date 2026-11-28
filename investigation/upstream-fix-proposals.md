@@ -54,7 +54,7 @@ status: current
   `Cargo.lock:1021` = commit
   `f64f328b431d495fbf2328e3dab04f93c895a889`。
 - checkout:
-  `~/.cargo/git/checkouts/cordis-rs-5f2363c780da6763/f64f328/`
+  `{cargo-git-checkout}/cordis-rs-5f2363c780da6763/f64f328/`
   （以下「現行固定版」と表記）。
 - 比較用の旧版: 同じく `22290d9/`（v0.62.0、以下「旧固定版」）。
 - host: `src/bin/cordis_agent_ui.rs`、`Cargo.toml`。
@@ -306,11 +306,11 @@ pub fn request(
 ## 根拠ファイル
 
 - `Cargo.toml`、`Cargo.lock`、`src/bin/cordis_agent_ui.rs`
-- `~/.cargo/git/checkouts/cordis-rs-5f2363c780da6763/f64f328/`
+- `{cargo-git-checkout}/cordis-rs-5f2363c780da6763/f64f328/`
   - `src/services/agent_loop.rs`
   - `src/services/approval.rs`
   - `src/services/tools.rs`
-- `~/.cargo/git/checkouts/cordis-rs-5f2363c780da6763/22290d9/`
+- `{cargo-git-checkout}/cordis-rs-5f2363c780da6763/22290d9/`
   - `src/services/agent_loop.rs`
   - `src/services/approval.rs`
 - `investigation/round-4.md`、`investigation/round-5.md`

@@ -117,7 +117,7 @@ pinned checkout `22290d9/src/services/llm.rs:192`（`from_async_text`）`:219`�
 
 ## B. `r2-gpui-caps`（gpui 0.2.2 ローカルソース実力調査、17項目）
 
-一次情報: `~/.cargo/registry/src/.../gpui-0.2.2`（Zed 製、vcs sha `69e2130295...`）。外部検索なし。
+一次情報: `{cargo-registry}/src/.../gpui-0.2.2`（Zed 製、vcs sha `69e2130295...`）。外部検索なし。
 
 ### B-A1 `gpui-no-builtin-text-widget` [high/yes]
 `src/gpui.rs:10-46`, `src/input.rs:4-9`, `examples/input.rs:29-40`。完成済み TextInput widget は無い。ただし「入力基盤が無い」とは同義でない（B-A2/A3）。
@@ -138,7 +138,7 @@ pinned checkout `22290d9/src/services/llm.rs:192`（`from_async_text`）`:219`�
 core 全体を `markdown|syntect|pulldown|comrak|highlight` で grep → markdown は doc コメント2件のみ。`src/style.rs:493-`, `:950 combine_highlights`, `src/elements/text.rs:188 with_highlights` の範囲装飾プリミティブはある。**Range→HighlightStyle を生成するパーサは PoC 側で用意が必要**。
 
 ### B-B2 `markdown-crates-in-local-cache` [medium/no]
-`~/.cargo/registry/src/.../` に `comrak-0.28.0/0.59.0`, `pulldown-cmark-0.12.2/0.13.4/0.13.5/0.13.6`, `markdown-1.0.0`, `syntect-5.3.0`, `tree-sitter-0.24.7/0.27.1`。PoC Cargo.lock には0件。**オフライン追加可能、未選定**。
+`{cargo-registry}/src/.../` に `comrak-0.28.0/0.59.0`, `pulldown-cmark-0.12.2/0.13.4/0.13.5/0.13.6`, `markdown-1.0.0`, `syntect-5.3.0`, `tree-sitter-0.24.7/0.27.1`。PoC Cargo.lock には0件。**オフライン追加可能、未選定**。
 
 ### B-B3 `gpui-component-incompatible` [high/partial] ★戦略判断
 `gpui-component-0.9.1/Cargo.toml:278-280`: `[dependencies.gpui] version = "=0.3.12" package = "gpui-pre"`。gpui-pre は「zed@d2a4fb6 のスナップショット」、本 PoC の gpui 0.2.2 は `69e2130...` で**別 crate**。Markdown/Input/仮想リストを揃えるが直接混用不可。再利用できるのは pure logic のみ（round-2 E-02 と同結論）。
