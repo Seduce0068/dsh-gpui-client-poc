@@ -73,19 +73,6 @@ fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
         .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
 }
 
-// `flush` stays local: this probe writes diagnostics with `eprintln!`, while
-// the shared `DshCorrelation` in `acp_launch` owns the state and rendering.
-impl DshCorrelation {
-    fn flush(&self) {
-        if !self.enabled {
-            return;
-        }
-        for line in self.rendered_lines() {
-            eprintln!("{line}");
-        }
-    }
-}
-
 /// Run one prompt over an arbitrary transport, collect the agent message
 /// chunks delivered through `session/update`, and publish the negotiated
 /// session id to `correlation`.

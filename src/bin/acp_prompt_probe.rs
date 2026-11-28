@@ -59,17 +59,6 @@ fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
         .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
 }
 
-impl DshCorrelation {
-    fn flush(&self) {
-        if !self.enabled {
-            return;
-        }
-        for line in self.rendered_lines() {
-            eprintln!("{line}");
-        }
-    }
-}
-
 /// Diagnostic echo of the prompt on stderr. CLI/env input is untrusted, so
 /// credential-looking text is masked while the `prompt => …` prefix stays.
 fn format_prompt_echo(prompt: &str) -> String {

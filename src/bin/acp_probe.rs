@@ -15,7 +15,6 @@ use agent_client_protocol::schema::{
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -29,45 +28,6 @@ use acp_launch::*;
 // `emit` が宛先を一箇所で固定する。テストはスレッドローカルの
 // `OUTPUT_CAPTURE` に差し替えて、グローバルな stdout/stderr を奪わずに
 // 各呼び出し箇所のストリームを検証する（本番は None のまま）。
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProbeStream {
-    Stdout,
-    Stderr,
-}
-
-thread_local! {
-    static OUTPUT_CAPTURE: RefCell<Option<Vec<(ProbeStream, String)>>> =
-        const { RefCell::new(None) };
-}
-
-fn emit(stream: ProbeStream, line: &str) {
-    let captured = OUTPUT_CAPTURE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if let Some(lines) = slot.as_mut() {
-            lines.push((stream, line.to_string()));
-            true
-        } else {
-            false
-        }
-    });
-    if !captured {
-        match stream {
-            ProbeStream::Stdout => println!("{line}"),
-            ProbeStream::Stderr => eprintln!("{line}"),
-        }
-    }
-}
-
-#[cfg(test)]
-fn start_capture() {
-    OUTPUT_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
-}
-
-#[cfg(test)]
-fn take_capture() -> Vec<(ProbeStream, String)> {
-    OUTPUT_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default())
-}
 
 // ---- Secure `dsh` launch -------------------------------------------------
 //
@@ -85,72 +45,6 @@ fn take_capture() -> Vec<(ProbeStream, String)> {
 // (stderr) stream, so provider credentials printed by `dsh` never leak into
 // the log. This mirrors `acp_prompt_probe.rs`; the offline tests exercise both
 // the redaction policy and the drain without spawning `dsh`.
-
-impl DshCorrelation {
-    /// Diagnostics go to stderr through the single `emit` routing point.
-    fn flush(&self) {
-        if !self.enabled {
-            return;
-        }
-        for line in self.rendered_lines() {
-            emit(ProbeStream::Stderr, &line);
-        }
-    }
-}
-
-/// How the graceful shutdown of the `dsh --profile acp` subprocess ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShutdownOutcome {
-    /// The agent exited on its own after the ACP transport was closed (EOF).
-    Exited,
-    /// The agent ignored EOF and was killed after the grace period elapsed.
-    KilledAfterTimeout,
-    /// `wait()` itself failed, so the child state is unknown.
-    WaitFailed,
-}
-
-/// Gracefully tear down the `dsh --profile acp` subprocess.
-///
-/// # Why no `session/close` request (unstable-feature decision)
-///
-/// In the pinned `agent-client-protocol` 0.11.1, `CloseSessionRequest`
-/// (`session/close`) only exists behind the `unstable_session_close` feature.
-/// The schema marks it **UNSTABLE**: "not part of the spec yet, and may be
-/// removed or changed at any point" (see `agent-client-protocol-schema`
-/// `agent.rs` near `CloseSessionRequest`, and the crate's
-/// `schema/client_to_agent/requests.rs:52-53`). Enabling it would mean editing
-/// `Cargo.toml` (outside this task's two-file scope), and the project's own
-/// dependency triage (`investigation/round-5.md`) records that the gate was
-/// renamed/removed in 5.3.0, so a `session/close`-based implementation would
-/// have to be rewritten on the next ACP upgrade. Decision: do **not** enable
-/// any unstable feature.
-///
-/// The stable, wire-compatible alternative used here: when `connect_with`
-/// returns, the ACP connection and its stdio transport are dropped, which
-/// closes our write half of the child's stdin. A stdio ACP agent observes that
-/// EOF as session teardown (cancel in-flight work, release session resources).
-/// We then allow a bounded grace period for a clean exit and only escalate to
-/// `kill()` as a last resort, so a hung agent can neither leak a subprocess
-/// nor block this probe forever. (`session/cancel` is stable, but this probe
-/// sends no prompts, so there is no in-flight turn to cancel.)
-async fn shutdown_child(child: &mut tokio::process::Child, grace: Duration) -> ShutdownOutcome {
-    match tokio::time::timeout(grace, child.wait()).await {
-        Ok(Ok(_status)) => ShutdownOutcome::Exited,
-        Ok(Err(error)) => {
-            emit(ProbeStream::Stderr, &format!("child wait failed: {error}"));
-            ShutdownOutcome::WaitFailed
-        }
-        Err(_elapsed) => {
-            emit(
-                ProbeStream::Stderr,
-                &format!("child did not exit within {grace:?}; killing"),
-            );
-            let _ = child.kill().await;
-            let _ = child.wait().await; // reap so no zombie is left behind
-            ShutdownOutcome::KilledAfterTimeout
-        }
-    }
-}
 
 /// 起動コンテキストは診断情報なので stderr へ。
 fn report_startup(cwd: &Path) {

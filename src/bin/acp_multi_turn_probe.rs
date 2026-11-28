@@ -15,7 +15,6 @@
 //! - `ProbeStream::Stderr`（`eprintln!`）: 診断出力のみ。子プロセスの警告と
 //!   shutdown 結果。結果を stderr に混ぜない。
 
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,51 +28,6 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 #[path = "../acp_launch.rs"]
 mod acp_launch;
 use acp_launch::*;
-
-// ---- Output contract: one routing point for stdout vs stderr -------------
-//
-// `emit` が宛先を一箇所で固定する。テストはスレッドローカルの
-// `OUTPUT_CAPTURE` に差し替えて、グローバルな stdout/stderr を奪わずに
-// 各呼び出し箇所のストリームを検証する（本番は None のまま）。
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProbeStream {
-    Stdout,
-    Stderr,
-}
-
-thread_local! {
-    static OUTPUT_CAPTURE: RefCell<Option<Vec<(ProbeStream, String)>>> =
-        const { RefCell::new(None) };
-}
-
-fn emit(stream: ProbeStream, line: &str) {
-    let captured = OUTPUT_CAPTURE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if let Some(lines) = slot.as_mut() {
-            lines.push((stream, line.to_string()));
-            true
-        } else {
-            false
-        }
-    });
-    if !captured {
-        match stream {
-            ProbeStream::Stdout => println!("{line}"),
-            ProbeStream::Stderr => eprintln!("{line}"),
-        }
-    }
-}
-
-#[cfg(test)]
-fn start_capture() {
-    OUTPUT_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
-}
-
-#[cfg(test)]
-fn take_capture() -> Vec<(ProbeStream, String)> {
-    OUTPUT_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default())
-}
 
 // ---- Secure `dsh` launch -------------------------------------------------
 //
@@ -91,70 +45,6 @@ fn take_capture() -> Vec<(ProbeStream, String)> {
 // (stderr) stream, so provider credentials printed by `dsh` never leak into
 // the log. This mirrors `acp_prompt_probe.rs`; the offline tests exercise both
 // the redaction policy and the drain without spawning `dsh`.
-
-impl DshCorrelation {
-    /// Diagnostics go to stderr through the single `emit` routing point.
-    fn flush(&self) {
-        if !self.enabled {
-            return;
-        }
-        for line in self.rendered_lines() {
-            emit(ProbeStream::Stderr, &line);
-        }
-    }
-}
-
-/// How the graceful shutdown of the `dsh --profile acp` subprocess ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShutdownOutcome {
-    /// The agent exited on its own after the ACP transport was closed (EOF).
-    Exited,
-    /// The agent ignored EOF and was killed after the grace period elapsed.
-    KilledAfterTimeout,
-    /// `wait()` itself failed, so the child state is unknown.
-    WaitFailed,
-}
-
-/// Gracefully tear down the `dsh --profile acp` subprocess after the turn loop.
-///
-/// # Why no `session/close` request (unstable-feature decision)
-///
-/// In the pinned `agent-client-protocol` 0.11.1, `CloseSessionRequest`
-/// (`session/close`) is gated behind the UNSTABLE `unstable_session_close`
-/// feature and is documented as "not part of the spec yet, and may be removed
-/// or changed at any point" (`agent-client-protocol-schema` `agent.rs` near
-/// `CloseSessionRequest`; crate `schema/client_to_agent/requests.rs:52-53`).
-/// Enabling it would require editing `Cargo.toml` (outside this task's
-/// two-file scope), and `investigation/round-5.md` records that the gate was
-/// renamed/removed in 5.3.0, so a `session/close` implementation would need a
-/// rewrite on the next ACP upgrade. Decision: do **not** enable any unstable
-/// feature (including `unstable_session_model` for a close-time cancel).
-///
-/// The stable alternative: once `connect_with` returns, the ACP connection and
-/// its stdio transport are dropped, closing our write half of the child's
-/// stdin. A stdio ACP agent treats that EOF as session teardown. We give the
-/// agent a bounded grace period to exit cleanly and only escalate to `kill()`
-/// as a last resort, so a hung agent cannot leak a subprocess or block the
-/// probe. (`session/cancel` is stable, but all turns have already completed
-/// here, so there is no in-flight work to cancel.)
-async fn shutdown_child(child: &mut tokio::process::Child, grace: Duration) -> ShutdownOutcome {
-    match tokio::time::timeout(grace, child.wait()).await {
-        Ok(Ok(_status)) => ShutdownOutcome::Exited,
-        Ok(Err(error)) => {
-            emit(ProbeStream::Stderr, &format!("child wait failed: {error}"));
-            ShutdownOutcome::WaitFailed
-        }
-        Err(_elapsed) => {
-            emit(
-                ProbeStream::Stderr,
-                &format!("child did not exit within {grace:?}; killing"),
-            );
-            let _ = child.kill().await;
-            let _ = child.wait().await; // reap so no zombie is left behind
-            ShutdownOutcome::KilledAfterTimeout
-        }
-    }
-}
 
 /// 完了サマリはパイプ可能な結果なので stdout へ。
 fn report_completed(prompt_count: usize) {

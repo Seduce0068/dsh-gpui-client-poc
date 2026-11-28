@@ -54,20 +54,6 @@ use acp_launch::*;
 // `acp_prompt_probe.rs`; the offline tests exercise both the redaction policy
 // and the drain without spawning `dsh`.
 
-// `flush` stays in this binary: its diagnostics go to stderr, never into the
-// panel's transcript buffer. Shared state and drain live in `acp_launch`.
-impl DshCorrelation {
-    /// Diagnostics stay on stderr, never in the panel's transcript buffer.
-    fn flush(&self) {
-        if !self.enabled {
-            return;
-        }
-        for line in self.rendered_lines() {
-            eprintln!("{line}");
-        }
-    }
-}
-
 /// Prompt sent to the agent when the user supplies no CLI argument or env var.
 const DEFAULT_PROMPT: &str = "Explain this repository in one sentence.";
 

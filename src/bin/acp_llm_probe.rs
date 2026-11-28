@@ -26,7 +26,6 @@
 //!   `rendered_lines()` の書式と redaction は変更しない契約であり、
 //!   その全行が stderr へ出ることを回帰テストで固定する。
 
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -51,45 +50,6 @@ use acp_launch::*;
 // `OUTPUT_CAPTURE` に差し替えて、グローバルな stdout/stderr を奪わずに
 // 各呼び出し箇所のストリームを検証する（本番は None のまま）。
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProbeStream {
-    Stdout,
-    Stderr,
-}
-
-thread_local! {
-    static OUTPUT_CAPTURE: RefCell<Option<Vec<(ProbeStream, String)>>> =
-        const { RefCell::new(None) };
-}
-
-fn emit(stream: ProbeStream, line: &str) {
-    let captured = OUTPUT_CAPTURE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if let Some(lines) = slot.as_mut() {
-            lines.push((stream, line.to_string()));
-            true
-        } else {
-            false
-        }
-    });
-    if !captured {
-        match stream {
-            ProbeStream::Stdout => println!("{line}"),
-            ProbeStream::Stderr => eprintln!("{line}"),
-        }
-    }
-}
-
-#[cfg(test)]
-fn start_capture() {
-    OUTPUT_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
-}
-
-#[cfg(test)]
-fn take_capture() -> Vec<(ProbeStream, String)> {
-    OUTPUT_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default())
-}
-
 // ---- Secure `dsh` launch -------------------------------------------------
 //
 // Never resolve `dsh` through the ambient `PATH`: a poisoned entry (`.`, a
@@ -97,18 +57,6 @@ fn take_capture() -> Vec<(ProbeStream, String)> {
 // fake `dsh` and capture the ACP stdio traffic. Resolve an absolute path from
 // an explicit override or a fixed allowlist, then give the child a minimal,
 // attacker-independent `PATH`.
-
-impl DshCorrelation {
-    fn flush(&self) {
-        if !self.enabled {
-            return;
-        }
-        // 相関 id 付きの redact 済み行は診断出力なので stderr 固定。
-        for line in self.rendered_lines() {
-            emit(ProbeStream::Stderr, &line);
-        }
-    }
-}
 
 /// Operator-facing class of an ACP / model-provider failure.
 ///

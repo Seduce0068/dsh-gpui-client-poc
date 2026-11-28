@@ -5,12 +5,15 @@
 //! is absolute. This module is included from each binary with
 //! `#[path = "../acp_launch.rs"] mod acp_launch;`; it is not a Cargo target.
 //!
-//! Redaction and stderr correlation are shared here as well; `flush` stays in
-//! each binary because its output sink (`emit` vs `eprintln!`) is bin-specific.
+//! Redaction, stderr correlation and `flush` are shared here as well. `flush`
+//! routes through `emit`, whose production fallback is `eprintln!`, so the
+//! observable stdout/stderr split is unchanged across all six binaries.
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// System dirs safe to expose to `dsh` and its children. `node` for the
 /// `#!/usr/bin/env node` shebang lives in `/usr/bin`.
@@ -300,4 +303,100 @@ pub(crate) fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
 pub(crate) async fn reap_child(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
     let _ = child.wait().await; // reap so no zombie is left behind
+}
+
+// ---- Output contract: one routing point for stdout vs stderr --------------
+
+/// Result lines go to stdout; diagnostics go to stderr. `emit` is the single
+/// routing point for every ACP binary (previously duplicated in three probes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProbeStream {
+    #[allow(dead_code)] // handshake probes emit result lines; others only emit diagnostics
+    Stdout,
+    Stderr,
+}
+
+thread_local! {
+    static OUTPUT_CAPTURE: RefCell<Option<Vec<(ProbeStream, String)>>> =
+        const { RefCell::new(None) };
+}
+
+pub(crate) fn emit(stream: ProbeStream, line: &str) {
+    let captured = OUTPUT_CAPTURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(lines) = slot.as_mut() {
+            lines.push((stream, line.to_string()));
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        match stream {
+            ProbeStream::Stdout => println!("{line}"),
+            ProbeStream::Stderr => eprintln!("{line}"),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)] // only probes with stream-capture tests call these
+pub(crate) fn start_capture() {
+    OUTPUT_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+#[allow(dead_code)] // only probes with stream-capture tests call these
+pub(crate) fn take_capture() -> Vec<(ProbeStream, String)> {
+    OUTPUT_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default())
+}
+
+impl DshCorrelation {
+    /// Correlation-tagged, redacted stderr lines share one routing point.
+    pub(crate) fn flush(&self) {
+        if !self.enabled {
+            return;
+        }
+        for line in self.rendered_lines() {
+            emit(ProbeStream::Stderr, &line);
+        }
+    }
+}
+
+/// How the graceful shutdown of the `dsh --profile acp` subprocess ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // only the two handshake probes use graceful shutdown
+pub(crate) enum ShutdownOutcome {
+    /// The agent exited on its own after the ACP transport was closed (EOF).
+    Exited,
+    /// The agent ignored EOF and was killed after the grace period elapsed.
+    KilledAfterTimeout,
+    /// `wait()` itself failed, so the child state is unknown.
+    WaitFailed,
+}
+
+/// Close stdin, allow a bounded grace period for a clean exit, then kill+wait
+/// so no zombie survives. `session/close` is unstable in the pinned ACP
+/// version, so EOF on stdin is the stable wire-compatible teardown signal.
+#[allow(dead_code)] // only the two handshake probes use graceful shutdown
+pub(crate) async fn shutdown_child(
+    child: &mut tokio::process::Child,
+    grace: Duration,
+) -> ShutdownOutcome {
+    match tokio::time::timeout(grace, child.wait()).await {
+        Ok(Ok(_status)) => ShutdownOutcome::Exited,
+        Ok(Err(error)) => {
+            emit(ProbeStream::Stderr, &format!("child wait failed: {error}"));
+            ShutdownOutcome::WaitFailed
+        }
+        Err(_elapsed) => {
+            emit(
+                ProbeStream::Stderr,
+                &format!("child did not exit within {grace:?}; killing"),
+            );
+            let _ = child.kill().await;
+            let _ = child.wait().await; // reap so no zombie is left behind
+            ShutdownOutcome::KilledAfterTimeout
+        }
+    }
 }
