@@ -445,6 +445,25 @@ mod tests {
         assert_eq!(outcome, ShutdownOutcome::KilledAfterTimeout);
     }
 
+    /// `reap_child` が実 subprocess を kill + wait してゾンビを残さないことを検証する。
+    /// 共有モジュールの tests は6つのバイナリへ組み込まれるため、実プロセスを
+    /// spawn するこのテストは bin 側に置く（1回だけ実行される）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reap_child_reaps_a_real_subprocess() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a long-lived child");
+
+        super::reap_child(&mut child).await;
+
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "reap_child must wait() the child so try_wait() reports it exited"
+        );
+    }
+
     // ---- 出力契約の回帰テスト（stdout/stderr の使い分け） ----
 
     /// 成功結果は stdout、起動 context と shutdown は stderr へ。
@@ -475,6 +494,21 @@ mod tests {
                 ),
                 (ProbeStream::Stderr, "SHUTDOWN = Exited".to_string()),
             ]
+        );
+    }
+
+    /// `WaitFailed` も shutdown の診断なので stderr へ `SHUTDOWN = WaitFailed` と出る。
+    /// `wait()` のエラー自体を注入するには子の wait 状態を操作する必要があり困難なため、
+    /// ここでは表示契約（Debug 表現とストリーム）のみを固定し、無理に注入しない。
+    #[test]
+    fn wait_failed_shutdown_is_reported_on_stderr() {
+        start_capture();
+        report_shutdown(ShutdownOutcome::WaitFailed);
+        let lines = take_capture();
+
+        assert_eq!(
+            lines,
+            vec![(ProbeStream::Stderr, "SHUTDOWN = WaitFailed".to_string())]
         );
     }
 
@@ -544,6 +578,34 @@ mod tests {
         assert!(
             dirs.iter()
                 .all(|dir| dir != &PathBuf::from(".") && dir != &PathBuf::from("/tmp"))
+        );
+    }
+
+    /// 空 HOME / 空 DSH_BIN は「未設定」と同じ扱いになり、ハイジャック可能な
+    /// 相対パスを生んではならない（dsh パス境界の回帰）。
+    #[test]
+    fn empty_home_and_empty_dsh_bin_yield_only_absolute_search_candidates() {
+        let empty_home = super::trusted_dsh_dirs(Some(Path::new("")));
+        assert!(
+            !empty_home.is_empty(),
+            "empty HOME must still fall back to the system dirs"
+        );
+        assert!(
+            empty_home.iter().all(|dir| dir.is_absolute()),
+            "empty HOME must never yield a relative (hijackable) dir: {empty_home:?}"
+        );
+
+        let cwd = PathBuf::from("/work");
+        let dirs = vec![PathBuf::from("/trusted/bin")];
+        let from_empty_bin = super::dsh_candidates(Some(&PathBuf::new()), &cwd, &dirs);
+        assert_eq!(
+            from_empty_bin,
+            vec![PathBuf::from("/trusted/bin/dsh")],
+            "empty DSH_BIN must contribute no candidate beyond search_dirs"
+        );
+        assert!(
+            from_empty_bin.iter().all(|path| path.is_absolute()),
+            "every candidate must stay absolute: {from_empty_bin:?}"
         );
     }
 

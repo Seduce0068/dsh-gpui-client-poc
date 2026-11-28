@@ -504,6 +504,21 @@ mod tests {
         );
     }
 
+    /// `WaitFailed` も shutdown の診断なので stderr へ `SHUTDOWN = WaitFailed` と出る。
+    /// `wait()` のエラー自体を注入するには子の wait 状態を操作する必要があり困難なため、
+    /// ここでは表示契約（Debug 表現とストリーム）のみを固定し、無理に注入しない。
+    #[test]
+    fn wait_failed_shutdown_is_reported_on_stderr() {
+        start_capture();
+        report_shutdown(ShutdownOutcome::WaitFailed);
+        let lines = take_capture();
+
+        assert_eq!(
+            lines,
+            vec![(ProbeStream::Stderr, "SHUTDOWN = WaitFailed".to_string())]
+        );
+    }
+
     /// kill に至る警告も診断なので stderr に留まる。
     #[tokio::test]
     async fn shutdown_child_warning_stays_on_stderr() {

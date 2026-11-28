@@ -605,18 +605,4 @@ mod tests {
             Some(OsStr::new("placeholder-not-a-real-key"))
         );
     }
-
-    /// Deterministic Runtime Proof that `reap_child` leaves no zombie: after
-    /// kill+wait, `try_wait()` must report an already-reaped exit status.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn reap_child_reaps_a_killed_child() {
-        use super::reap_child;
-        let mut child = tokio::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn sleep");
-        reap_child(&mut child).await;
-        assert!(matches!(child.try_wait(), Ok(Some(_))));
-    }
 }

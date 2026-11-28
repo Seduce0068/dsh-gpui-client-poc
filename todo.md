@@ -40,7 +40,7 @@ verified:
 - [x] `stream-ui-error-redaction` — `run_acp_turn` の Err 枝が `turn error: {error}`
   を生文字列で GPUI 画面ステータスへ表示する。redact してから status へ渡し
   回帰テスト追加。根拠 `src/bin/acp_stream_ui.rs:423-428,517` / FINAL-SEC / confirmed。
-- [ ] `shared-reap-test-relocation` — `src/acp_launch.rs` の tests が6バイナリへ
+- [x] `shared-reap-test-relocation` — `src/acp_launch.rs` の tests が6バイナリへ
   include され、実 `sleep 30` を6回 spawn する。reap の subprocess テストを
   `src/bin/acp_probe.rs` の tests へ移して1回だけ実行する。
   根拠 `src/acp_launch.rs:498-507` / FINAL-TEST / confirmed。
@@ -53,22 +53,22 @@ verified:
 
 ### 優先度: 低（swarm-unlimited 2026-11-28 最終バックログ補充で追加）
 
-- [ ] `smoke-gui-hardening` — 証跡 PNG の再利用誤認（撮影前に `rm -f "${png}"`）、
+- [x] `smoke-gui-hardening` — 証跡 PNG の再利用誤認（撮影前に `rm -f "${png}"`）、
   `stop_app` の無期限 wait（timeout + KILL で FAIL）、事前確認への `file` /
   `timeout` 追加。根拠 `scripts/smoke-gui.sh:7-9,35-47,51-65,71-72,87-98` /
   FINAL-OPS / likely。
-- [ ] `cargo-rust-version` — `rust-toolchain.toml` の MSRV 1.88.0 を
+- [x] `cargo-rust-version` — `rust-toolchain.toml` の MSRV 1.88.0 を
   `Cargo.toml` の `rust-version` へ機械可読に宣言。根拠 `Cargo.toml:1-7`,
   `rust-toolchain.toml` / FINAL-OPS / confirmed。
-- [ ] `acp-probe-readme-description` — README の `acp_probe` 説明が
+- [x] `acp-probe-readme-description` — README の `acp_probe` 説明が
   「initialize と session/new のみ」のままだが、実装は
   `session/request_permission` へ Cancelled 応答する。表を実体へ更新。
   根拠 `README.md:18`, `src/bin/acp_probe.rs:83,287-288,352-382` /
   FINAL-DOCS / confirmed。
-- [ ] `shutdown-waitfailed-label-test` — `ShutdownOutcome::WaitFailed` の
+- [x] `shutdown-waitfailed-label-test` — `ShutdownOutcome::WaitFailed` の
   `SHUTDOWN = WaitFailed` 表示契約が未テスト。根拠 `src/acp_launch.rs:375-389`,
   `src/bin/acp_probe.rs:456` / FINAL-TEST / confirmed。
-- [ ] `empty-home-dsh-boundary-tests` — `trusted_dsh_dirs` の空 HOME と
+- [x] `empty-home-dsh-boundary-tests` — `trusted_dsh_dirs` の空 HOME と
   `dsh_candidates` の空 DSH_BIN が全候補絶対化の不変条件で未テスト。
   根拠 `src/acp_launch.rs:26,44`, `src/bin/acp_probe.rs:505,527` /
   FINAL-TEST / confirmed。
@@ -216,6 +216,13 @@ verified:
   （286 passed, 0 failed）すべて exit 0。Betterleaks git/dir hit zero。
   markdownlint は `cross-review/README.md:44` の HEAD 既存行で失敗（今回差分なし）
   のため baseline として区別。R4 の 20ms sleep フレーク指摘は likely のため却下。
+- 2026-11-28 仕上げイテレーション検証: 共有モジュールの実 subprocess テストを
+  `acp_probe.rs` へ移動（6重→1回）、WaitFailed 表示契約・空 HOME / 空 DSH_BIN
+  境界をテスト追加、`Cargo.toml` に `rust-version = "1.88.0"`（rustc 1.88.0 と一致）、
+  smoke スクリプトに証跡 PNG の削除・stop_app の timeout/KILL・事前確認・
+  STOP_WAIT_SEC 整数検証を追加。`bash -n` exit 0、
+  `STOP_WAIT_SEC=0.5` で明示 FAIL exit 1 を実証。fmt / check / clippy -D warnings /
+  `cargo test --bins`（284 passed, 0 failed）すべて exit 0、Betterleaks git/dir hit zero。
 - [x] `acp-producer-window-shutdown` — `acp_stream_ui` の window close が
   `StreamSignal::complete()` のみで ACP プロデューサ／dsh 子の終了条件に接続されない。
   CancellationToken を `spawn_acp` へ渡し connect/prompt を中断＋kill/wait する
