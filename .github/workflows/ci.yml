@@ -19,6 +19,7 @@ jobs:
   gates:
     uses: Seduce0068/workflows/.github/workflows/rust-gates.yml@v1
     with:
+      rust_toolchain: "1.88.0"
       apt_packages: |
         libxcb1-dev
         libxkbcommon-dev
@@ -26,3 +27,5 @@ jobs:
       audit: false
       # §15: unsafe は lint でも検知してビルド失敗とする。
       clippy_args: "-D clippy::undocumented_unsafe_blocks"
+      extra_gates: |
+        bash -n scripts/smoke-gui.sh

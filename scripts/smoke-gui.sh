@@ -9,14 +9,26 @@ EVIDENCE_DIR="${SMOKE_EVIDENCE_DIR:-$(mktemp -d /tmp/dsh-gpui-smoke.XXXXXX)}"
 mkdir -p "${EVIDENCE_DIR}"
 
 # ウィンドウが描画されるまでの待ち秒数（環境に応じて調整可）。
+# sleep に渡すため負数・小数は拒否する（0 は待ちなしとして許可）。
 RENDER_WAIT_SEC="${RENDER_WAIT_SEC:-5}"
-# spectacle 撮影のタイムアウト秒数。
+if ! [[ "${RENDER_WAIT_SEC}" =~ ^[0-9]+$ ]]; then
+	echo "FAIL: RENDER_WAIT_SEC は 0 以上の整数秒で指定してください: ${RENDER_WAIT_SEC}" >&2
+	exit 1
+fi
+# spectacle 撮影のタイムアウト秒数。timeout に渡すため 1 以上の整数を要求する。
 CAPTURE_TIMEOUT_SEC="${CAPTURE_TIMEOUT_SEC:-15}"
+if ! [[ "${CAPTURE_TIMEOUT_SEC}" =~ ^[0-9]+$ ]] ||
+	(( CAPTURE_TIMEOUT_SEC < 1 )); then
+	echo "FAIL: CAPTURE_TIMEOUT_SEC は 1 以上の整数秒で指定してください: ${CAPTURE_TIMEOUT_SEC}" >&2
+	exit 1
+fi
 # アプリ停止時の待ち上限秒数（超過で SIGKILL し、明示的な FAIL とする）。
 # ポーリング回数を $(( 秒 * 10 )) で計算するため整数のみ受け付ける。
+# 0 はポーリングなしで即 FAIL となるため拒否する。
 STOP_WAIT_SEC="${STOP_WAIT_SEC:-5}"
-if ! [[ "${STOP_WAIT_SEC}" =~ ^[0-9]+$ ]]; then
-	echo "FAIL: STOP_WAIT_SEC は整数秒で指定してください: ${STOP_WAIT_SEC}" >&2
+if ! [[ "${STOP_WAIT_SEC}" =~ ^[0-9]+$ ]] ||
+	(( STOP_WAIT_SEC < 1 )); then
+	echo "FAIL: STOP_WAIT_SEC は 1 以上の整数秒で指定してください: ${STOP_WAIT_SEC}" >&2
 	exit 1
 fi
 
@@ -124,7 +136,8 @@ for bin in "${BINS[@]}"; do
 	rm -f -- "${png}"
 
 	# 全画面 PNG を取得。-b(背景) -n(通知なし) -o(出力先)。
-	if ! timeout "${CAPTURE_TIMEOUT_SEC}" spectacle -b -n -o "${png}"; then
+	# --kill-after で spectacle が TERM を無視しても KILL に昇格して終了させる。
+	if ! timeout --kill-after=5s "${CAPTURE_TIMEOUT_SEC}s" spectacle -b -n -o "${png}"; then
 		echo "FAIL: spectacle の撮影に失敗しました: ${bin}" >&2
 		exit 1
 	fi

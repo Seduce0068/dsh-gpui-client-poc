@@ -21,6 +21,71 @@ verified:
 
 ## 未着手
 
+### 優先度: 高（swarm-unlimited 2026-11-28 23:24 R6 で追加）
+
+- [x] `ci-toolchain-and-shell-gate` — `.github/workflows/ci.yml:21` に
+  `rust_toolchain: "1.88.0"`（rust-toolchain.toml と一致）と
+  `extra_gates: bash -n scripts/smoke-gui.sh` を追加。委譲先 v1 の input
+  定義を実読し両キーが存在することを確認済み（`startup_failure` 回避）。
+  根拠 `.github/workflows/ci.yml:20-28`, `rust-toolchain.toml:4-7`,
+  `ci-delegation.md:19-27` / DISC-OPS / confirmed。
+- [x] `smoke-input-validation` — `RENDER_WAIT_SEC` / `CAPTURE_TIMEOUT_SEC` に
+  数値・範囲検証を追加（タイムアウトは正の値のみ）、`STOP_WAIT_SEC=0` を拒否、
+  `timeout` に `--kill-after` を付与。実 dsh / ディスプレイ不要の失敗経路確認。
+  根拠 `scripts/smoke-gui.sh:11-21,114-130` / DISC-OPS / confirmed。
+- [x] `sanitize-residual-paths-and-pid` — `investigation/upstream-fix-proposals.md:57,309,313`
+  と `investigation/round-1.md:214,277` / `round-2.md:120,141` のローカル
+  Cargo パスを `<cargo-git-checkout>/...` / `<cargo-registry>/...` へ、
+  `investigation/round-5.md:152` の実 PID を `<pid>` へ置換。履歴事実は保持。
+  根拠 DISC-DOCS / DISC-SANITIZE / confirmed。
+- [x] `child-loader-env-scrub` — `scrub_child_env` に `LD_PRELOAD` /
+  `LD_LIBRARY_PATH` / `DYLD_INSERT_LIBRARIES` を追加（認証情報は維持）。
+  PATH 固定を迂回するローダ注入を遮断。根拠 `src/acp_launch.rs:516-519` /
+  DISC-CODE / confirmed（親判断: PoC に正当な利用はないため採用）。
+- [x] `shutdown-waitfailed-redact` — `shutdown_child` の
+  `child wait failed: {error}` を redact してから emit。
+  根拠 `src/acp_launch.rs:448` / DISC-CODE / confirmed。
+- [x] `dsh-candidate-strictness` — `trusted_dsh_dirs` が絶対 HOME のみ採用、
+  `resolve_dsh_from` が実行権限の無い候補をスキップするよう修正し
+  境界テスト追加。根拠 `src/acp_launch.rs:24-34,56-68` / DISC-CODE / confirmed。
+
+### 優先度: 中（swarm-unlimited 2026-11-28 23:24 R6 で追加）
+
+- [ ] `fixture-unapplied-config-warnings` — `fixtures/text-turn.cordis.yml` の
+  `reasoningEffort` / `compression` が host 側で未適用のため、UI と stderr に
+  「未適用」警告を表示し回帰テスト追加。本実装の要否は判断事項として残す。
+  根拠 `src/bin/cordis_composition_ui.rs:154-172,210-214,434-443` / DISC-OPS / confirmed。
+- [ ] `flaky-test-timing` — 固定 sleep 依存を低減: `acp_probe.rs:380` の
+  10ms×100 ポーリング、`acp_stream_ui.rs:901` の 20ms、`acp_stream_ui.rs:1307` の
+  50ms cancel を決定論的待機／即時 cancel へ、`acp_probe.rs:438,519` の
+  `sleep 30` を短縮＋grace 延長。根拠 DISC-TEST / confirmed/likely。
+- [ ] `okf-frontmatter-for-rounds` — `investigation/README.md` と
+  `investigation/round-1.md` 〜 `round-5.md` に OKF の `type` のみ付与
+  （H1 を残すため title は入れない）。本文履歴は不変、markdownlint 確認。
+  根拠 DISC-DOCS / confirmed（親判断: 予約ファイルは index.md/log.md のみ）。
+- [ ] `todo-memo-js-evaluated` — `todo.md:438` の `!!js` 判断待ちを
+  「現行 pin の host loader で評価済み」へ更新し、静的値化は仕様変更時のみ
+  判断事项へ残す。根拠 `src/bin/cordis_composition_ui.rs:399-403,689-755`,
+  `src/bin/cordis_entries_toggle_ui.rs:939-1013` / DISC-OPS / confirmed。
+
+### 優先度: 低（swarm-unlimited 2026-11-28 23:24 R6 で追加）
+
+- [ ] `emit-direct-println-cleanup` — `acp_stream_probe.rs:77,177-178` の
+  `println!` と `acp_prompt_probe.rs:66,74` の `eprintln!` を共有 `emit` 経由へ。
+  本番宛先は不変で、OUTPUT_CAPTURE による検証性を統一。
+  根拠 DISC-CODE / confirmed（前回は観測差なしで却下したが、回帰テスト固定を
+  目的とする範囲で採用）。
+- [ ] `failure-classification-boundary-test` — `AcpFailureKind::classify` の
+  複合メッセージ（balance + 401 等）の優先順位境界テストを追加。
+  根拠 `src/bin/acp_llm_probe.rs:76` / DISC-TEST / confirmed。
+- [ ] `bridge-service-not-found-test` — `visible_commands` の
+  `ServiceNotFound` 分岐テストを追加。根拠 `src/bin/cordis_bridge.rs:85` /
+  DISC-TEST / confirmed。
+- [ ] `shared-test-dedup-review` — 共有モジュールの純粋テストが 6 bin で
+  重複実行される設計を維持するか、1 箇所へ集約するかを検討し、
+  変更する場合は実 subprocess テストを bin 側 1 回に維持。
+  根拠 `src/acp_launch.rs:521`, DISC-TEST / confirmed（前回判断との整合確認）。
+
 ### 優先度: 高（swarm-unlimited 2026-11-28 最終バックログ補充で追加）
 
 - [x] `redact-separate-token-values` — `redact_secrets` が `password: hunter2` /
@@ -437,3 +502,22 @@ verified:
 - 要相談（エージェント判断しない事項）: 案C継続 vs 案B（gpui-pre + gpui-component）移行、モデル残高補填 or モック検証、`dsh` 本体の ACP 対応方針、配布時 Apache-2.0 NOTICE、gpui 0.3 再判断タイミング。詳細は `investigation/final.md`「ユーザーへの意思決定事項」。
 - 2026-11-28 swarm-unlimited R6（review+discovery 32 エージェント、失敗0）で判断待ちとしてメモ化した候補（TODO 化せず）: `agent-client-protocol` 5.3.0 / `tokio` 1.54.1 更新可否（README の xattr 衝突リスクと `cargo audit` 再評価を伴う）、`fixtures/text-turn.cordis.yml` の `!!js` 式を host 側で評価するか静的値へ書換えるか、DSH 実 `protocolVersion` と approval/request の実 JSON-RPC キャプチャ、背圧／リングバッファ導入とバースト観測、グラフェーム単位 Backspace の Wayland 実機実験、不正 UTF-8 CLI 引数（`args_os` 化）、window `app_id` 明示設定、dsh ハング時の bounded wait、`scripts/smoke-gui.sh` 実実行と証跡取得、Fiber `strong_count` / `register_fiber` 登録残り、`investigation/ux-pool-triage.md` の次フェーズ候補（B-31 / B-39 / B-41 等）。いずれも実実行・仕様変更・優先度判断を伴うためユーザー承認待ち。
 - 2026-11-28 のローカル確認: `betterleaks git` は hit zero（exit 0）。ただしリポジトリに `.pre-commit-config.yaml` は存在せず、CI は `audit: false`（`.github/workflows/ci.yml:26`）。pre-commit 主軸のシークレットゲート追加は設定変更を伴うためユーザー承認待ち。
+- 2026-11-28 23:24 R6 裁定: モデル出力本文（`acp body:` / `chunk:`）の redact は
+  「結果は逐語 stdout」契約と矛盾するため却下（DISC-CODE の当該指摘は不採用）。
+  `SECRET_KEYS` の別名拡充（`client_secret` 等）は秘密ポリシー判断のためメモ止め。
+  `Seduce0068` は公開リポジトリのオーナー識別子でサニタイズ対象外、
+  `passkey-gateway/docs/...` 参照は known:yes で受容済み、上流 crate の公開
+  連絡先メールと `/home/operator` 等のテスト用プレースホルダも変更不要。
+  CI ツールチェーンは MSRV 1.88.0 のみを標準ゲートとする（stable 併用は別途判断）。
+  fixture の reasoningEffort / compression は本実装を今は行わず警告表示のみ。
+  in-flight キャンセルテストは pending connect 限定を維持、実 dsh / GUI smoke の
+  実行は手動確認として残す。共有テストの 6 重は純粋関数のみで無害、
+  実 subprocess は bin 側 1 回という前回判断を維持。
+- 2026-11-28 23:55 検証: CI input は委譲先 v1 定義と一致（rust_toolchain / extra_gates）、
+  YAML parse 成功、smoke の不正入力 4 ケースが FAIL exit 1、
+  残存ローカルパス/PID なし、Betterleaks git/dir hit zero、
+  fmt / check / clippy -D warnings / `cargo test --bins`（296 passed, 0 failed）。
+  R4 低優先指摘「実行ビットではなく X_OK 相当で判定すべき」は却下:
+  完全な判定には libc FFI（unsafe 禁止）または新規依存が必要で、
+  現在の mode 0o111 チェックは is_file のみより保守的かつ実 dsh は owner 実行可能。
+  厳格な X_OK 判定は設計判断として残す。
