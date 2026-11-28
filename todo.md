@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-28T16:07:00+09:00"
+  at: "2026-11-28T18:03:00+09:00"
 ---
 
 ## 進行中
@@ -95,7 +95,7 @@ verified:
   検証（2026-11-28 親）: `git diff -- README.md` で旧セクションの当時事実を保持した
   まま NVIDIA 実証と未確認項目の分離を確認、記述は investigation の `acp body: 2` /
   `EndTurn` と一致。
-- [ ] `shared-dsh-launch-module` — dsh パス解決・redact・相関・shutdown が
+- [x] `shared-dsh-launch-module` — dsh パス解決・redact・相関・shutdown が
   3〜6 バイナリに逐語複製され、契約乖離（`DSH_ACP_PATCH` 検証の有無など）を生む。
   共有モジュールへ抽出し全プローブで同一契約をテスト。
   根拠 `src/bin/acp_llm_probe.rs:98-168,175-190`, `src/bin/acp_prompt_probe.rs:28-96,325`,
@@ -104,7 +104,7 @@ verified:
    重複441行を削除。`cargo fmt --all -- --check` / `cargo check --bins` /
    `cargo clippy --bins --all-targets -- -D warnings` / `cargo test --bins`
    （249 passed, 0 failed）すべて exit 0、R4 指摘なし。
-   S2=redaction / DshCorrelation / spawn_stderr_capture も共有へ抽出（flush は各 bin の emit / eprintln 契約を維持しローカル残置）。再び fmt / check / clippy / cargo test --bins（249 passed, 0 failed）すべて exit 0、R4 指摘なし、Betterleaks git/dir hit zero。S3=reap_child と S4=patch 群（resolve_patch_path / dsh_cli_args）も共有化済み（共有モジュールは6 bin 全てに include されるため、未使用バイナリ向けに項目単位の `#[allow(dead_code)]` を付与）。S5=ProbeStream / emit / capture / DshCorrelation::flush / ShutdownOutcome / shutdown_child も共有化済み（旧 eprintln! 3 bin も共有 emit の本番フォールバックで宛先不変、項目単位 dead_code allow）。S6=prompt 群は残課題。
+   S2=redaction / DshCorrelation / spawn_stderr_capture も共有へ抽出（flush は各 bin の emit / eprintln 契約を維持しローカル残置）。再び fmt / check / clippy / cargo test --bins（249 passed, 0 failed）すべて exit 0、R4 指摘なし、Betterleaks git/dir hit zero。S3=reap_child と S4=patch 群（resolve_patch_path / dsh_cli_args）も共有化済み（共有モジュールは6 bin 全てに include されるため、未使用バイナリ向けに項目単位の `#[allow(dead_code)]` を付与）。S5=ProbeStream / emit / capture / DshCorrelation::flush / ShutdownOutcome / shutdown_child も共有化済み（旧 eprintln! 3 bin も共有 emit の本番フォールバックで宛先不変、項目単位 dead_code allow）。S6=prompt 群（PROMPT_ENV / MAX_PROMPT_CHARS / sanitize_prompt / resolve_prompt_with_default）も共有化し、各 bin の DEFAULT_PROMPT と 2 引数ラッパーは維持。全段で fmt / check / clippy -D warnings / cargo test --bins（249 passed, 0 failed）exit 0、R4 指摘なし、Betterleaks git/dir hit zero。
 
 ### 優先度: 中（swarm-unlimited 2026-11-28 review+discovery で追加）
 

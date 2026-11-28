@@ -39,38 +39,17 @@ fn model_error_outcome(error: &str) -> String {
     format!("prompt error (model-side): {}", redact_secrets(error))
 }
 
-/// Prompt input contract mirrored from `acp_stream_ui::resolve_prompt`: join
-/// every CLI argument with one space, reject blank / control / overlong input,
-/// then fall back to the environment and finally the fixed prompt.
+/// Prompt input contract shared with the other probes through `acp_launch`:
+/// join every CLI argument with one space, reject blank / control / overlong
+/// input, then fall back to the environment and finally this fixed prompt.
+/// `PROMPT_ENV`, `MAX_PROMPT_CHARS`, `sanitize_prompt` and the resolver are
+/// provided by the `acp_launch::*` glob import above.
 const DEFAULT_PROMPT: &str = "1+1은?";
-const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
-const MAX_PROMPT_CHARS: usize = 4096;
 
-fn sanitize_prompt(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed
-        .chars()
-        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\t')))
-    {
-        return None;
-    }
-    if trimmed.chars().count() > MAX_PROMPT_CHARS {
-        return None;
-    }
-    Some(trimmed.to_owned())
-}
-
+/// Two-argument shim so existing callers and tests keep their signature while
+/// the validation logic stays in one shared implementation.
 fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
-    let from_args = args.join(" ");
-    if let Some(prompt) = sanitize_prompt(&from_args) {
-        return prompt;
-    }
-    env_prompt
-        .and_then(sanitize_prompt)
-        .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
+    resolve_prompt_with_default(args, env_prompt, DEFAULT_PROMPT)
 }
 
 /// Run one prompt over an arbitrary transport, collect the agent message

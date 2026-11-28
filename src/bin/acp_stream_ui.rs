@@ -55,11 +55,10 @@ use acp_launch::*;
 // and the drain without spawning `dsh`.
 
 /// Prompt sent to the agent when the user supplies no CLI argument or env var.
+///
+/// `PROMPT_ENV` / `MAX_PROMPT_CHARS` / `sanitize_prompt` now come from the
+/// shared `acp_launch` module via `use acp_launch::*` above.
 const DEFAULT_PROMPT: &str = "Explain this repository in one sentence.";
-
-/// Environment variable holding a user-supplied prompt (CLI arguments win).
-const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
-const MAX_PROMPT_CHARS: usize = 4096;
 
 /// One independent transcript per ACP session, plus connection-level status.
 ///
@@ -317,43 +316,16 @@ async fn run_stream_pump(signal: &StreamSignal, mut on_change: impl FnMut() -> b
     }
 }
 
-/// Resolve the prompt from CLI arguments, then the environment, then the
-/// built-in default.
+/// Resolve the prompt from CLI arguments, then the environment, then this
+/// binary's built-in default.
 ///
-/// All CLI arguments are joined with a single space so an unquoted shell
-/// invocation (`acp_stream_ui explain this repo`) still reads naturally.
-/// Surrounding whitespace is trimmed and blank input is ignored, so an empty
-/// argument or an explicitly empty environment variable cannot send a blank
-/// prompt to the agent. Kept pure so the input contract is regression-testable
-/// without opening GPUI or an ACP connection.
-fn sanitize_prompt(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    // Reject NUL and terminal-escape controls; allow newline/tab for
-    // multi-line demo prompts (swarm review round 283).
-    if trimmed
-        .chars()
-        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\t')))
-    {
-        return None;
-    }
-    if trimmed.chars().count() > MAX_PROMPT_CHARS {
-        return None;
-    }
-    Some(trimmed.to_owned())
-}
-
+/// The join / trim / control-character / length contract now lives in the
+/// shared `acp_launch` module (`resolve_prompt_with_default`, backed by
+/// `sanitize_prompt`, `PROMPT_ENV` and `MAX_PROMPT_CHARS`, all brought in by
+/// `use acp_launch::*`). This two-argument wrapper keeps the existing call site
+/// and tests unchanged while supplying `DEFAULT_PROMPT` as the final fallback.
 fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
-    let from_args = args.join(" ");
-    if let Some(prompt) = sanitize_prompt(&from_args) {
-        return prompt;
-    }
-
-    env_prompt
-        .and_then(sanitize_prompt)
-        .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
+    resolve_prompt_with_default(args, env_prompt, DEFAULT_PROMPT)
 }
 
 /// Stable prefixes for ACP startup failures. Centralising them lets the

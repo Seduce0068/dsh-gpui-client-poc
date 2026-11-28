@@ -25,38 +25,15 @@ use acp_launch::*;
 // an explicit override or a fixed allowlist, then give the child a minimal,
 // attacker-independent `PATH`.
 
-/// Prompt input contract mirrored from `acp_stream_ui::resolve_prompt`:
-/// join every CLI argument with one space, reject blank / control / overlong
-/// input, then fall back to the environment and finally the fixed prompt.
+/// Per-binary default prompt: the final fallback after CLI arguments and
+/// `DSH_ACP_PROMPT` are exhausted. Resolution itself is shared in `acp_launch`.
 const DEFAULT_PROMPT: &str = "1+1は？";
-const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
-const MAX_PROMPT_CHARS: usize = 4096;
 
-fn sanitize_prompt(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed
-        .chars()
-        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\t')))
-    {
-        return None;
-    }
-    if trimmed.chars().count() > MAX_PROMPT_CHARS {
-        return None;
-    }
-    Some(trimmed.to_owned())
-}
-
+/// Two-argument adapter over the shared resolver, keeping existing callers and
+/// tests unchanged. `PROMPT_ENV`, `MAX_PROMPT_CHARS` and `sanitize_prompt` are
+/// provided by the `acp_launch::*` glob import above.
 fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
-    let from_args = args.join(" ");
-    if let Some(prompt) = sanitize_prompt(&from_args) {
-        return prompt;
-    }
-    env_prompt
-        .and_then(sanitize_prompt)
-        .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
+    resolve_prompt_with_default(args, env_prompt, DEFAULT_PROMPT)
 }
 
 /// Diagnostic echo of the prompt on stderr. CLI/env input is untrusted, so

@@ -400,3 +400,48 @@ pub(crate) async fn shutdown_child(
         }
     }
 }
+
+// ---- Prompt resolution ----------------------------------------------------
+
+#[allow(dead_code)] // only the three prompt-driven binaries read this env
+pub(crate) const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
+#[allow(dead_code)] // only the three prompt-driven binaries cap input length
+pub(crate) const MAX_PROMPT_CHARS: usize = 4096;
+
+/// Join every CLI argument with one space and reject blank / control / overlong
+/// input. Pure so the boundary contract can be tested without a subprocess.
+#[allow(dead_code)] // only the three prompt-driven binaries sanitize CLI/env input
+pub(crate) fn sanitize_prompt(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed
+        .chars()
+        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\t')))
+    {
+        return None;
+    }
+    if trimmed.chars().count() > MAX_PROMPT_CHARS {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+/// Resolve CLI → environment → the caller-supplied default. Each probe keeps
+/// its own `DEFAULT_PROMPT` and a two-argument local wrapper so existing tests
+/// and CLI behaviour stay unchanged.
+#[allow(dead_code)] // only the three prompt-driven binaries resolve prompts
+pub(crate) fn resolve_prompt_with_default(
+    args: &[String],
+    env_prompt: Option<&str>,
+    default: &str,
+) -> String {
+    let from_args = args.join(" ");
+    if let Some(prompt) = sanitize_prompt(&from_args) {
+        return prompt;
+    }
+    env_prompt
+        .and_then(sanitize_prompt)
+        .unwrap_or_else(|| default.to_owned())
+}
