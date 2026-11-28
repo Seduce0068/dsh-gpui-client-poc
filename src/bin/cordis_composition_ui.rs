@@ -610,7 +610,10 @@ mod tests {
     fn state_dirs_use_stable_user_id_and_pid_scratch() {
         let base = test_base("dirs");
         let dirs = state_dirs_for(&base, "cordis-composition-ui", "testuser", 4321);
-        assert_eq!(dirs.stable, base.join("cordis-composition-ui/user-testuser"));
+        assert_eq!(
+            dirs.stable,
+            base.join("cordis-composition-ui/user-testuser")
+        );
         assert_eq!(dirs.process, base.join("cordis-composition-ui/pid-4321"));
         assert!(dirs.stable.starts_with(&base));
         assert!(dirs.process.starts_with(&base));
