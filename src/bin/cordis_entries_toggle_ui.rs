@@ -166,7 +166,14 @@ fn message_feedback_config(config: &Value) -> MessageFeedbackConfig {
     if let Some(bytes) =
         config_i64(config, "maxNoteBytes").or_else(|| config_i64(config, "max_note_bytes"))
     {
-        parsed.max_note_bytes = bytes.max(0) as usize;
+        // A negative or out-of-range value is a config typo; keep the default
+        // instead of clamping to zero, which MessageFeedback rejects
+        // (same rule as cordis_composition_ui.rs).
+        if let Ok(bytes) = usize::try_from(bytes) {
+            if bytes > 0 {
+                parsed.max_note_bytes = bytes;
+            }
+        }
     }
     parsed
 }
@@ -182,7 +189,11 @@ fn tool_subagent_config(config: &Value) -> ToolSubagentConfig {
     }
     if let Some(depth) = config_i64(config, "maxDepth").or_else(|| config_i64(config, "max_depth"))
     {
-        parsed.max_depth = depth.max(0) as usize;
+        // Mirror cordis_composition_ui.rs: a converted 0 is a valid depth and
+        // is adopted; only negative/out-of-range values keep the default.
+        if let Ok(depth) = usize::try_from(depth) {
+            parsed.max_depth = depth;
+        }
     }
     parsed
 }
@@ -200,6 +211,21 @@ fn failed_lines(failed: &[(String, String)]) -> Vec<String> {
         .iter()
         .map(|(id, error)| format!("(failed) {id}: {error}"))
         .collect()
+}
+
+/// Failure labels shared by the click handler and its regression tests. The
+/// wording mirrors `cordis_composition_toggle_ui.rs` so both UIs report the
+/// same kind of failure the same way.
+fn unload_error_message(error: &str) -> String {
+    format!("unload error: {error}")
+}
+
+fn mount_error_message(error: &str) -> String {
+    format!("mount error: {error}")
+}
+
+fn plugin_error_message(error: &str) -> String {
+    format!("plugin error: {error}")
 }
 
 /// CLI flag for the DeepSeek credential. The environment is the primary
@@ -380,14 +406,16 @@ impl Panel {
     fn toggle(&mut self, index: usize) {
         self.error = None;
         // Collect the data needed for a remount before taking a mutable slot
-        // borrow, so `state` is not borrowed both ways at once.
-        let (ctx, plugin) = {
+        // borrow, so `state` is not borrowed both ways at once. A `to_plugin`
+        // error is carried forward instead of being dropped with `.ok()`, so a
+        // failed remount is reported just like the startup path's failed rows.
+        let (ctx, plugin, plugin_error) = {
             let state = self.state.lock().expect("toggle state poisoned");
             let Some(slot) = state.entries.get(index) else {
                 return;
             };
             if slot.fiber.is_some() {
-                (None, None)
+                (None, None, None)
             } else {
                 let entry = state
                     .composition
@@ -395,24 +423,39 @@ impl Panel {
                     .iter()
                     .find(|entry| entry.id == slot.id)
                     .cloned();
-                let plugin = entry.and_then(|entry| entry.to_plugin(&state.registry).ok());
-                (Some(state.ctx.clone()), plugin)
+                match entry {
+                    Some(entry) => match entry.to_plugin(&state.registry) {
+                        Ok(plugin) => (Some(state.ctx.clone()), Some(plugin), None),
+                        Err(error) => (None, None, Some(plugin_error_message(&error.to_string()))),
+                    },
+                    None => (None, None, None),
+                }
             }
         };
 
-        let error_message = {
+        let error_message = if let Some(message) = plugin_error {
+            Some(message)
+        } else {
             let mut state = self.state.lock().expect("toggle state poisoned");
             if let Some(slot) = state.entries.get_mut(index) {
                 if let Some(fiber) = slot.fiber.take() {
-                    let _ = futures::executor::block_on(fiber.unload());
-                    None
+                    match futures::executor::block_on(fiber.unload()) {
+                        Ok(()) => None,
+                        Err(error) => {
+                            // Keep the fiber in its slot on a failed unload so
+                            // a retry cannot mount a second fiber over effects
+                            // that are still live (same as the sibling UI).
+                            slot.fiber = Some(fiber);
+                            Some(unload_error_message(&error.to_string()))
+                        }
+                    }
                 } else if let (Some(ctx), Some(plugin)) = (ctx, plugin) {
                     match futures::executor::block_on(Fiber::mount(&ctx, Box::new(plugin))) {
                         Ok(fiber) => {
                             slot.fiber = Some(fiber);
                             None
                         }
-                        Err(error) => Some(format!("error: {error}")),
+                        Err(error) => Some(mount_error_message(&error.to_string())),
                     }
                 } else {
                     None
@@ -424,9 +467,13 @@ impl Panel {
         if let Some(message) = error_message {
             eprintln!("cordis_entries_toggle_ui: mount failed: {message}");
             self.error = Some(SharedString::from(message));
+            // A failed toggle must never persist a choice that disagrees with
+            // the live slots (e.g. a `disabled` from a failed unload).
+            self.refresh();
+            return;
         }
 
-        // Persist the new enable/disable state after a successful toggle.
+        // Persist the new enable/disable state only after a successful toggle.
         // `CompositionState::save` already writes a sibling temp file and
         // renames it into place, so the atomic-write mechanism is reused as-is;
         // the old code's only gap was discarding its Result with `let _ =`.
@@ -1095,5 +1142,295 @@ mod tests {
         let lines = failed_lines(&failed);
         assert_eq!(lines, vec!["(failed) plugin-a: mount: boom"]);
         assert!(failed_lines(&[]).is_empty());
+    }
+
+    fn int_config(key: &str, value: i64) -> Value {
+        let mut map = BTreeMap::new();
+        map.insert(key.to_owned(), Value::Integer(value));
+        Value::Object(map)
+    }
+
+    #[test]
+    fn numeric_config_negative_zero_and_extreme_values_keep_defaults() {
+        let feedback_default = MessageFeedbackConfig::default().max_note_bytes;
+        let depth_default = ToolSubagentConfig::default().max_depth;
+
+        // Positive, in-range values are still adopted (both key spellings).
+        assert_eq!(
+            message_feedback_config(&int_config("maxNoteBytes", 2048)).max_note_bytes,
+            2048
+        );
+        assert_eq!(
+            message_feedback_config(&int_config("max_note_bytes", 4096)).max_note_bytes,
+            4096
+        );
+        assert_eq!(
+            tool_subagent_config(&int_config("maxDepth", 3)).max_depth,
+            3
+        );
+        assert_eq!(
+            tool_subagent_config(&int_config("max_depth", 4)).max_depth,
+            4
+        );
+
+        // Negative values used to be clamped to 0 by `max(0) as usize`; the
+        // port defaults must survive instead.
+        for negative in [i64::MIN, -1] {
+            assert_eq!(
+                message_feedback_config(&int_config("maxNoteBytes", negative)).max_note_bytes,
+                feedback_default
+            );
+            assert_eq!(
+                tool_subagent_config(&int_config("maxDepth", negative)).max_depth,
+                depth_default
+            );
+        }
+
+        // A zero byte limit would be rejected by MessageFeedback, so its
+        // default survives; a zero subagent depth is valid and is adopted,
+        // matching cordis_composition_ui.rs.
+        assert_eq!(
+            message_feedback_config(&int_config("maxNoteBytes", 0)).max_note_bytes,
+            feedback_default
+        );
+        assert_eq!(
+            tool_subagent_config(&int_config("maxDepth", 0)).max_depth,
+            0
+        );
+
+        // Extreme i64 value: adopted on 64-bit, out-of-range on 32-bit. Either
+        // way it must never wrap or truncate into a small number.
+        let extreme = i64::MAX;
+        assert_eq!(
+            message_feedback_config(&int_config("maxNoteBytes", extreme)).max_note_bytes,
+            usize::try_from(extreme).unwrap_or(feedback_default)
+        );
+        assert_eq!(
+            tool_subagent_config(&int_config("maxDepth", extreme)).max_depth,
+            usize::try_from(extreme).unwrap_or(depth_default)
+        );
+    }
+
+    #[test]
+    fn toggle_roundtrip_keeps_slots_and_saved_state_in_sync() {
+        let base = test_base("roundtrip");
+        std::fs::create_dir_all(&base).unwrap();
+        let state_path = base.join("entries-state.json");
+        let ctx = Context::root("entries-toggle-test-roundtrip");
+        let mut registry = PluginRegistry::new();
+        registry.register(
+            "noop",
+            PluginFactory::new(move |_ctx, _config| async move { Ok::<(), cordis_rs::Error>(()) }),
+        );
+        let composition = Composition {
+            entries: vec![cordis_rs::loader::Entry {
+                id: "noop-entry".to_owned(),
+                plugin: "noop".to_owned(),
+                config: Value::Object(BTreeMap::new()),
+                disabled: false,
+                inject: Vec::new(),
+            }],
+            warnings: Vec::new(),
+        };
+        let plugin = composition.entries[0].to_plugin(&registry).unwrap();
+        let fiber = futures::executor::block_on(Fiber::mount(&ctx, Box::new(plugin))).unwrap();
+        assert_eq!(fiber.state(), Lifecycle::Active);
+
+        let state = Arc::new(Mutex::new(ToggleState {
+            entries: vec![EntrySlot {
+                id: "noop-entry".to_owned(),
+                fiber: Some(fiber),
+            }],
+            ctx,
+            registry,
+            composition,
+            saved: CompositionState::new(),
+            state_path: state_path.clone(),
+        }));
+        let mut panel = Panel {
+            state,
+            lines: Vec::new(),
+            error: None,
+            failed: Vec::new(),
+        };
+
+        // First click unloads and persists `false`.
+        panel.toggle(0);
+        assert!(panel.error.is_none());
+        {
+            let guard = panel.state.lock().expect("toggle state poisoned");
+            assert!(guard.entries[0].fiber.is_none());
+            assert!(!guard.saved.is_enabled("noop-entry", true));
+        }
+        let first: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(first["noop-entry"], serde_json::json!(false));
+
+        // Second click remounts from the entry's factory and persists `true`.
+        panel.toggle(0);
+        assert!(panel.error.is_none());
+        {
+            let guard = panel.state.lock().expect("toggle state poisoned");
+            assert_eq!(
+                guard.entries[0].fiber.as_ref().map(Fiber::state),
+                Some(Lifecycle::Active)
+            );
+            assert!(guard.saved.is_enabled("noop-entry", false));
+        }
+        let second: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(second["noop-entry"], serde_json::json!(true));
+
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::remove_dir(&base).unwrap();
+    }
+
+    #[test]
+    fn to_plugin_failure_is_visible_and_does_not_persist_disabled() {
+        let base = test_base("to-plugin-error");
+        std::fs::create_dir_all(&base).unwrap();
+        let state_path = base.join("entries-state.json");
+        let mut saved = CompositionState::new();
+        saved.set("stable", true);
+        saved.save(&state_path).unwrap();
+        let before = std::fs::read(&state_path).unwrap();
+
+        // An entry pointing at an unregistered plugin makes `to_plugin` fail
+        // before any mount is attempted.
+        let composition = Composition {
+            entries: vec![cordis_rs::loader::Entry {
+                id: "ghost".to_owned(),
+                plugin: "not-registered".to_owned(),
+                config: Value::Object(BTreeMap::new()),
+                disabled: false,
+                inject: Vec::new(),
+            }],
+            warnings: Vec::new(),
+        };
+        let state = Arc::new(Mutex::new(ToggleState {
+            entries: vec![EntrySlot {
+                id: "ghost".to_owned(),
+                fiber: None,
+            }],
+            ctx: Context::root("entries-toggle-test-plugin-error"),
+            registry: PluginRegistry::new(),
+            composition,
+            saved: saved.clone(),
+            state_path: state_path.clone(),
+        }));
+        let mut panel = Panel {
+            state,
+            lines: Vec::new(),
+            error: None,
+            failed: Vec::new(),
+        };
+
+        panel.toggle(0);
+        let message = panel
+            .error
+            .as_ref()
+            .expect("to_plugin error must be shown")
+            .to_string();
+        assert!(message.contains("not-registered"), "{message}");
+        {
+            let guard = panel.state.lock().expect("toggle state poisoned");
+            assert!(guard.entries[0].fiber.is_none());
+            assert!(!guard.saved.overrides.contains_key("ghost"));
+            assert_eq!(
+                guard.saved, saved,
+                "failed toggle must not add a disable override"
+            );
+        }
+        assert_eq!(
+            std::fs::read(&state_path).unwrap(),
+            before,
+            "failed toggle must not rewrite the saved state"
+        );
+
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::remove_dir(&base).unwrap();
+    }
+
+    #[test]
+    fn unload_failure_restores_fiber_and_skips_save() {
+        let base = test_base("unload-error");
+        std::fs::create_dir_all(&base).unwrap();
+        let state_path = base.join("entries-state.json");
+        let mut saved = CompositionState::new();
+        saved.set("stable", true);
+        saved.save(&state_path).unwrap();
+        let before = std::fs::read(&state_path).unwrap();
+
+        let ctx = Context::root("entries-toggle-test-unload-error");
+        futures::executor::block_on(async {
+            let _ = provide_tools(&ctx).await.unwrap();
+            let _ = provide_fs(&ctx).await.unwrap();
+        });
+        let fiber = futures::executor::block_on(Fiber::mount(
+            &ctx,
+            Box::new(cordis_rs::ports::tool_fs::ToolFs {
+                config: cordis_rs::plugin_ports::ToolFsConfig::default(),
+            }),
+        ))
+        .unwrap();
+        assert_eq!(fiber.state(), Lifecycle::Active);
+
+        // Inject a failing disposer into the fiber's own effect list so
+        // `unload()` returns Err, exercising the failure branch for real.
+        futures::executor::block_on(fiber.context().effect(|scope| async move {
+            scope.on_dispose(|| async {
+                Err::<(), cordis_rs::Error>(cordis_rs::Error::Domain(
+                    "injected",
+                    "injected unload failure".to_owned(),
+                ))
+            });
+            Ok::<(), cordis_rs::Error>(())
+        }))
+        .unwrap();
+
+        let state = Arc::new(Mutex::new(ToggleState {
+            entries: vec![EntrySlot {
+                id: "tool-fs-entry".to_owned(),
+                fiber: Some(fiber),
+            }],
+            ctx,
+            registry: PluginRegistry::new(),
+            composition: Composition::default(),
+            saved: saved.clone(),
+            state_path: state_path.clone(),
+        }));
+        let mut panel = Panel {
+            state,
+            lines: Vec::new(),
+            error: None,
+            failed: Vec::new(),
+        };
+
+        panel.toggle(0);
+        let message = panel
+            .error
+            .as_ref()
+            .expect("unload error must be shown")
+            .to_string();
+        assert!(message.contains("injected unload failure"), "{message}");
+        {
+            let guard = panel.state.lock().expect("toggle state poisoned");
+            assert!(
+                guard.entries[0].fiber.is_some(),
+                "a failed unload must keep the fiber in its slot"
+            );
+            assert_eq!(
+                guard.saved, saved,
+                "failed unload must not persist disabled"
+            );
+        }
+        assert_eq!(
+            std::fs::read(&state_path).unwrap(),
+            before,
+            "failed unload must not rewrite the saved state"
+        );
+
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::remove_dir(&base).unwrap();
     }
 }
