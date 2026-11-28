@@ -106,6 +106,76 @@ fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
     args
 }
 
+/// Characters that can wrap a key or a value in a URL / JSON / shell log line.
+const REDACTION_WRAPPERS: &[char] = &['"', '\'', '`', '(', ')', '[', ']', '{', '}', ',', '\\'];
+
+/// Reduce the left-hand side of a `key=value` / `key:value` token to a bare
+/// key. Wrappers are stripped from both ends first, then the last URL/JSON
+/// separator is dropped, so `?token`, `"api_key"`, `{"api_key"` and
+/// `['access_token']` all match the same key list. Kept pure so URL / JSON /
+/// quoted boundaries are regression-testable without a subprocess.
+fn redaction_key(raw: &str) -> &str {
+    let unwrapped = raw.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+    unwrapped
+        .rfind(['?', '&', '(', '[', '{'])
+        .map_or(unwrapped, |index| &unwrapped[index + 1..])
+}
+
+/// Validate the optional patch overlay path. An empty value means "unset";
+/// a non-empty value must name an existing file, otherwise a typo would
+/// silently produce a probe result without the patch. Same contract as
+/// `acp_llm_probe::resolve_patch_path`.
+fn resolve_patch_path(
+    raw: Option<std::ffi::OsString>,
+) -> std::result::Result<Option<std::ffi::OsString>, String> {
+    match raw {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => {
+            let path = std::path::Path::new(&value);
+            if !path.is_file() {
+                Err(format!("DSH_ACP_PATCH is not a file: {value:?}"))
+            } else {
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
+/// Prompt input contract mirrored from `acp_stream_ui::resolve_prompt`:
+/// join every CLI argument with one space, reject blank / control / overlong
+/// input, then fall back to the environment and finally the fixed prompt.
+const DEFAULT_PROMPT: &str = "1+1は？";
+const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
+const MAX_PROMPT_CHARS: usize = 4096;
+
+fn sanitize_prompt(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed
+        .chars()
+        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\t')))
+    {
+        return None;
+    }
+    if trimmed.chars().count() > MAX_PROMPT_CHARS {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
+    let from_args = args.join(" ");
+    if let Some(prompt) = sanitize_prompt(&from_args) {
+        return prompt;
+    }
+    env_prompt
+        .and_then(sanitize_prompt)
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
+}
+
 /// Mask credential-like values in a subprocess log line.
 ///
 /// A pure function: the redaction policy must be testable without spawning
@@ -139,7 +209,7 @@ fn redact_secrets(line: &str) -> String {
         let mut masked = false;
         for sep in ['=', ':'] {
             if let Some((key, _value)) = token.split_once(sep) {
-                let key = key.trim_start_matches(['?', '&', '(', '[']);
+                let key = redaction_key(key);
                 if SECRET_KEYS
                     .iter()
                     .any(|candidate| key.eq_ignore_ascii_case(candidate))
@@ -155,12 +225,15 @@ fn redact_secrets(line: &str) -> String {
         if masked {
             continue;
         }
-        // Bare provider keys and AWS access key ids.
-        if lower.starts_with("sk-") || lower.starts_with("ghp_") || lower.starts_with("gho_") {
+        // Bare provider keys and AWS access key ids; wrappers around a value
+        // must not hide it (`"sk-…"`, `['sk-…']`).
+        let bare = lower.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+        if bare.starts_with("sk-") || bare.starts_with("ghp_") || bare.starts_with("gho_") {
             out.push_str("[REDACTED]");
             continue;
         }
-        if token.len() == 20 && token.as_bytes().starts_with(b"AKIA") {
+        // `bare` comes from the lowercased token, so compare in lowercase.
+        if bare.len() == 20 && bare.starts_with("akia") {
             out.push_str("[REDACTED]");
             continue;
         }
@@ -260,6 +333,12 @@ where
     })
 }
 
+/// Diagnostic echo of the prompt on stderr. CLI/env input is untrusted, so
+/// credential-looking text is masked while the `prompt => …` prefix stays.
+fn format_prompt_echo(prompt: &str) -> String {
+    format!("prompt => {}", redact_secrets(prompt))
+}
+
 /// Send one prompt on a fresh ACP session over an arbitrary transport,
 /// publishing the negotiated session id to `correlation`.
 async fn prompt_over_with_correlation(
@@ -281,7 +360,7 @@ async fn prompt_over_with_correlation(
                 .block_task()
                 .await?;
             correlation.set_session_id(session.session_id.to_string());
-            eprintln!("prompt => {prompt}");
+            eprintln!("{}", format_prompt_echo(&prompt));
             let response = connection
                 .send_request(PromptRequest::new(
                     session.session_id,
@@ -310,33 +389,50 @@ async fn prompt_over(
     prompt_over_with_correlation(cwd, prompt, transport, DshCorrelation::offline()).await
 }
 
+/// Kill then wait: `wait()` reaps the child so no zombie is left behind.
+/// Mirrors `shutdown_child` in `acp_probe` / `acp_multi_turn_probe`.
+async fn reap_child(child: &mut tokio::process::Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await; // reap so no zombie is left behind
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let prompt = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "1+1は？".to_string());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let env_prompt = std::env::var(PROMPT_ENV).ok();
+    let prompt = resolve_prompt(&args, env_prompt.as_deref());
 
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
     // Optional stage-B overlay (e.g. the NVIDIA free-model patch) is injected
     // without touching the user's global profile. No secret is passed here.
-    let patch = std::env::var_os("DSH_ACP_PATCH").filter(|value| !value.is_empty());
+    let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))?;
     cmd.args(dsh_cli_args(patch.as_deref()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn()?;
-    let correlation = DshCorrelation::new(child.id().ok_or("no pid")?);
-    let stderr = child.stderr.take().ok_or("no stderr")?;
-    let capture = spawn_stderr_capture(stderr, correlation.clone());
-    let stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
 
-    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
-    let result = prompt_over_with_correlation(cwd, prompt, transport, correlation.clone()).await;
-    let _ = child.kill().await;
+    // All post-spawn steps are fallible; keep them in one block so even an
+    // early `no pid` / `no stdio` return still reaches the reap below.
+    let pipeline = async {
+        let correlation = DshCorrelation::new(child.id().ok_or("no pid")?);
+        let stderr = child.stderr.take().ok_or("no stderr")?;
+        let capture = spawn_stderr_capture(stderr, correlation.clone());
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+        let result =
+            prompt_over_with_correlation(cwd, prompt, transport, correlation.clone()).await;
+        Ok::<_, String>((capture, correlation, result))
+    }
+    .await;
+
+    reap_child(&mut child).await;
+
+    let (capture, correlation, result) = pipeline?;
     // Closing the pipe ends the drain; awaiting it guarantees every captured
     // line is present before the correlation report is printed.
     let _ = capture.await;
@@ -359,7 +455,10 @@ mod tests {
     use agent_client_protocol::{Agent, Channel};
     use tokio::io::AsyncWriteExt;
 
-    use super::{DshCorrelation, prompt_over, redact_secrets, spawn_stderr_capture};
+    use super::{
+        DEFAULT_PROMPT, DshCorrelation, MAX_PROMPT_CHARS, PROMPT_ENV, prompt_over, redact_secrets,
+        redaction_key, resolve_patch_path, resolve_prompt, spawn_stderr_capture,
+    };
 
     const SESSION_ID: &str = "offline-prompt-session";
 
@@ -529,6 +628,97 @@ mod tests {
     }
 
     #[test]
+    fn redaction_key_strips_url_json_and_quote_wrappers() {
+        assert_eq!(redaction_key("?token"), "token");
+        assert_eq!(redaction_key("&access_token"), "access_token");
+        assert_eq!(redaction_key("\"api_key\""), "api_key");
+        assert_eq!(redaction_key("{\"api_key\""), "api_key");
+        assert_eq!(redaction_key("['refresh_token'"), "refresh_token");
+        assert_eq!(redaction_key("api_key"), "api_key");
+    }
+
+    #[test]
+    fn redaction_masks_url_json_and_quoted_values() {
+        let cases = [
+            "https://host/path?api_key=sk-leaked-url",
+            "\"api_key\":\"sk-leaked-json\"",
+            "{'token': 'sk-leaked-quoted'}",
+            "api_key=\"sk-leaked-dq\"",
+            "token='abcd'",
+        ];
+        for case in cases {
+            let masked = redact_secrets(case);
+            assert!(
+                masked.contains("[REDACTED]")
+                    && !masked.contains("sk-leaked")
+                    && !masked.contains("abcd"),
+                "unmasked boundary: {case} -> {masked}"
+            );
+        }
+        // The original `?token=` contract is unchanged.
+        assert_eq!(redact_secrets("?token=abcd"), "token=[REDACTED]");
+    }
+
+    #[test]
+    fn prompt_echo_is_redacted() {
+        let line = super::format_prompt_echo("api_key=sk-leaked-prompt");
+        assert!(line.starts_with("prompt => "), "prefix changed: {line}");
+        assert!(
+            line.contains("api_key=[REDACTED]") && !line.contains("sk-leaked-prompt"),
+            "prompt echo leaked: {line}"
+        );
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn prompt_joins_all_cli_args_with_a_space() {
+        assert_eq!(
+            resolve_prompt(&args(&["explain", "this", "repository"]), None),
+            "explain this repository"
+        );
+        assert_eq!(
+            resolve_prompt(&args(&["from cli"]), Some("from env")),
+            "from cli"
+        );
+    }
+
+    #[test]
+    fn prompt_falls_back_to_environment_then_default() {
+        assert_eq!(PROMPT_ENV, "DSH_ACP_PROMPT");
+        assert_eq!(
+            resolve_prompt(&[], Some("  describe the tests  ")),
+            "describe the tests"
+        );
+        assert_eq!(resolve_prompt(&[], None), DEFAULT_PROMPT);
+        assert_eq!(resolve_prompt(&[], Some("   ")), DEFAULT_PROMPT);
+        assert_eq!(
+            resolve_prompt(&args(&["   "]), Some("env prompt")),
+            "env prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_rejects_control_chars_and_overlong_input() {
+        assert_eq!(
+            resolve_prompt(&args(&["a\0b"]), Some("env prompt")),
+            "env prompt"
+        );
+        assert_eq!(
+            resolve_prompt(&args(&["a\u{1b}b"]), Some("env prompt")),
+            "env prompt"
+        );
+        let long = "x".repeat(MAX_PROMPT_CHARS + 1);
+        assert_eq!(resolve_prompt(&[], Some(&long)), DEFAULT_PROMPT);
+        assert_eq!(
+            resolve_prompt(&args(&["hello\nworld"]), None),
+            "hello\nworld"
+        );
+    }
+
+    #[test]
     fn missing_session_id_uses_placeholder() {
         let correlation = DshCorrelation::new(7);
         correlation.record_stderr_line("booting".to_string());
@@ -674,6 +864,28 @@ mod tests {
             parts
                 .iter()
                 .all(|part| part != &PathBuf::from("/tmp") && part != &PathBuf::from("."))
+        );
+    }
+
+    #[test]
+    fn patch_path_validation_distinguishes_unset_from_typo() {
+        assert_eq!(resolve_patch_path(None).unwrap(), None);
+        assert_eq!(
+            resolve_patch_path(Some(std::ffi::OsString::new())).unwrap(),
+            None
+        );
+        let tmp = TestTempDir::new("patch");
+        let missing = tmp.path().join("absent.yml");
+        let error = resolve_patch_path(Some(missing.into_os_string())).unwrap_err();
+        assert!(
+            error.contains("DSH_ACP_PATCH is not a file"),
+            "unexpected error: {error}"
+        );
+        let existing = tmp.path().join("patch.yml");
+        std::fs::write(&existing, "profile: {}\n").expect("write patch file");
+        assert_eq!(
+            resolve_patch_path(Some(existing.clone().into_os_string())).unwrap(),
+            Some(existing.into_os_string())
         );
     }
 

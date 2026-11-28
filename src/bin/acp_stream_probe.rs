@@ -101,6 +101,62 @@ fn dsh_command_parts() -> Result<(PathBuf, OsString), String> {
     Ok((dsh_path, child_path))
 }
 
+/// Render a raw model-side prompt error for stdout, masking any credential
+/// text the ACP backend echoed back. Pure so the regression is testable
+/// without a live model provider.
+fn model_error_outcome(error: &str) -> String {
+    format!("prompt error (model-side): {}", redact_secrets(error))
+}
+
+/// Prompt input contract mirrored from `acp_stream_ui::resolve_prompt`: join
+/// every CLI argument with one space, reject blank / control / overlong input,
+/// then fall back to the environment and finally the fixed prompt.
+const DEFAULT_PROMPT: &str = "1+1은?";
+const PROMPT_ENV: &str = "DSH_ACP_PROMPT";
+const MAX_PROMPT_CHARS: usize = 4096;
+
+fn sanitize_prompt(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed
+        .chars()
+        .any(|c| c == '\0' || (c.is_control() && !matches!(c, '\n' | '\t')))
+    {
+        return None;
+    }
+    if trimmed.chars().count() > MAX_PROMPT_CHARS {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+fn resolve_prompt(args: &[String], env_prompt: Option<&str>) -> String {
+    let from_args = args.join(" ");
+    if let Some(prompt) = sanitize_prompt(&from_args) {
+        return prompt;
+    }
+    env_prompt
+        .and_then(sanitize_prompt)
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_owned())
+}
+
+/// Characters that can wrap a key or a value in a URL / JSON / shell log line.
+const REDACTION_WRAPPERS: &[char] = &['"', '\'', '`', '(', ')', '[', ']', '{', '}', ',', '\\'];
+
+/// Reduce the left-hand side of a `key=value` / `key:value` token to a bare
+/// key. Wrappers are stripped from both ends first, then the last URL/JSON
+/// separator is dropped, so `?token`, `"api_key"`, `{"api_key"` and
+/// `['access_token']` all match the same key list. Kept pure so URL / JSON /
+/// quoted boundaries are regression-testable without a subprocess.
+fn redaction_key(raw: &str) -> &str {
+    let unwrapped = raw.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+    unwrapped
+        .rfind(['?', '&', '(', '[', '{'])
+        .map_or(unwrapped, |index| &unwrapped[index + 1..])
+}
+
 /// Mask credential-like values in a subprocess log line.
 ///
 /// A pure function: the redaction policy must be testable without spawning
@@ -134,7 +190,7 @@ fn redact_secrets(line: &str) -> String {
         let mut masked = false;
         for sep in ['=', ':'] {
             if let Some((key, _value)) = token.split_once(sep) {
-                let key = key.trim_start_matches(['?', '&', '(', '[']);
+                let key = redaction_key(key);
                 if SECRET_KEYS
                     .iter()
                     .any(|candidate| key.eq_ignore_ascii_case(candidate))
@@ -150,12 +206,15 @@ fn redact_secrets(line: &str) -> String {
         if masked {
             continue;
         }
-        // Bare provider keys and AWS access key ids.
-        if lower.starts_with("sk-") || lower.starts_with("ghp_") || lower.starts_with("gho_") {
+        // Bare provider keys and AWS access key ids; wrappers around a value
+        // must not hide it (`"sk-…"`, `['sk-…']`).
+        let bare = lower.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+        if bare.starts_with("sk-") || bare.starts_with("ghp_") || bare.starts_with("gho_") {
             out.push_str("[REDACTED]");
             continue;
         }
-        if token.len() == 20 && token.as_bytes().starts_with(b"AKIA") {
+        // `bare` comes from the lowercased token, so compare in lowercase.
+        if bare.len() == 20 && bare.starts_with("akia") {
             out.push_str("[REDACTED]");
             continue;
         }
@@ -304,7 +363,7 @@ async fn stream_prompt_over_with_correlation(
                 .await
             {
                 Ok(response) => Ok(format!("stop_reason = {:?}", response.stop_reason)),
-                Err(error) => Ok(format!("prompt error (model-side): {error}")),
+                Err(error) => Ok(model_error_outcome(&error.to_string())),
             }
         })
         .await
@@ -331,12 +390,19 @@ async fn stream_prompt_over(
     stream_prompt_over_with_correlation(cwd, prompt, transport, DshCorrelation::offline()).await
 }
 
+/// Kill then wait: `wait()` reaps the child so no zombie is left behind.
+/// Mirrors `shutdown_child` in `acp_probe` / `acp_multi_turn_probe`.
+async fn reap_child(child: &mut tokio::process::Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await; // reap so no zombie is left behind
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let prompt = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "1+1은?".to_string());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let env_prompt = std::env::var(PROMPT_ENV).ok();
+    let prompt = resolve_prompt(&args, env_prompt.as_deref());
 
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
@@ -346,22 +412,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn()?;
-    let correlation = DshCorrelation::new(child.id().ok_or("no pid")?);
-    let stderr = child.stderr.take().ok_or("no stderr")?;
-    let capture = spawn_stderr_capture(stderr, correlation.clone());
-    let stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
 
-    let result =
-        stream_prompt_over_with_correlation(cwd, prompt, transport, correlation.clone()).await;
-    let _ = child.kill().await;
+    // All post-spawn steps are fallible; keep them in one block so even an
+    // early `no pid` / `no stdio` return still reaches the reap below.
+    let pipeline = async {
+        let correlation = DshCorrelation::new(child.id().ok_or("no pid")?);
+        let stderr = child.stderr.take().ok_or("no stderr")?;
+        let capture = spawn_stderr_capture(stderr, correlation.clone());
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+        let result =
+            stream_prompt_over_with_correlation(cwd, prompt, transport, correlation.clone()).await;
+        Ok::<_, String>((capture, correlation, result))
+    }
+    .await;
+
+    reap_child(&mut child).await;
+
+    let (capture, correlation, result) = pipeline?;
     // Closing the pipe ends the drain; awaiting it guarantees every captured
     // line is present before the correlation report is printed.
     let _ = capture.await;
     correlation.flush();
     let (collected, outcome) = result?;
-    println!("{outcome}");
+    // Final stdout guard: never print a raw ACP/model outcome line.
+    println!("{}", redact_secrets(&outcome));
     println!("captured {} chunk(s)", collected.len());
     Ok(())
 }
@@ -381,7 +457,8 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     use super::{
-        DshCorrelation, redact_secrets, spawn_stderr_capture, stream_prompt_over,
+        DEFAULT_PROMPT, DshCorrelation, MAX_PROMPT_CHARS, PROMPT_ENV, model_error_outcome,
+        redact_secrets, redaction_key, resolve_prompt, spawn_stderr_capture, stream_prompt_over,
         stream_prompt_over_with_correlation,
     };
 
@@ -576,6 +653,104 @@ mod tests {
         let masked = redact_secrets("key AKIAIOSFODNN7EXAMPLE ok");
         assert!(!masked.contains("AKIA"), "masked: {masked}");
         assert!(masked.contains("ok"), "masked: {masked}");
+    }
+
+    #[test]
+    fn redaction_key_strips_url_json_and_quote_wrappers() {
+        assert_eq!(redaction_key("?token"), "token");
+        assert_eq!(redaction_key("&access_token"), "access_token");
+        assert_eq!(redaction_key("\"api_key\""), "api_key");
+        assert_eq!(redaction_key("{\"api_key\""), "api_key");
+        assert_eq!(redaction_key("['refresh_token'"), "refresh_token");
+        assert_eq!(redaction_key("api_key"), "api_key");
+    }
+
+    #[test]
+    fn redaction_masks_url_json_and_quoted_values() {
+        let cases = [
+            "https://host/path?api_key=sk-leaked-url",
+            "\"api_key\":\"sk-leaked-json\"",
+            "{'token': 'sk-leaked-quoted'}",
+            "api_key=\"sk-leaked-dq\"",
+            "token='abcd'",
+        ];
+        for case in cases {
+            let masked = redact_secrets(case);
+            assert!(
+                masked.contains("[REDACTED]")
+                    && !masked.contains("sk-leaked")
+                    && !masked.contains("abcd"),
+                "unmasked boundary: {case} -> {masked}"
+            );
+        }
+        // The original `?token=` contract is unchanged.
+        assert_eq!(redact_secrets("?token=abcd"), "token=[REDACTED]");
+    }
+
+    #[test]
+    fn model_error_outcome_is_redacted_before_stdout() {
+        let line = model_error_outcome("auth failure: api_key=sk-leaked-model");
+        assert!(
+            line.starts_with("prompt error (model-side): "),
+            "prefix contract changed: {line}"
+        );
+        assert!(
+            line.contains("api_key=[REDACTED]") && !line.contains("sk-leaked-model"),
+            "model error leaked: {line}"
+        );
+        assert_eq!(
+            redact_secrets("prompt error (model-side): api_key=sk-leaked-print"),
+            "prompt error (model-side): api_key=[REDACTED]"
+        );
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn prompt_joins_all_cli_args_with_a_space() {
+        assert_eq!(
+            resolve_prompt(&args(&["explain", "this", "repository"]), None),
+            "explain this repository"
+        );
+        assert_eq!(
+            resolve_prompt(&args(&["from cli"]), Some("from env")),
+            "from cli"
+        );
+    }
+
+    #[test]
+    fn prompt_falls_back_to_environment_then_default() {
+        assert_eq!(PROMPT_ENV, "DSH_ACP_PROMPT");
+        assert_eq!(
+            resolve_prompt(&[], Some("  describe the tests  ")),
+            "describe the tests"
+        );
+        assert_eq!(resolve_prompt(&[], None), DEFAULT_PROMPT);
+        assert_eq!(resolve_prompt(&[], Some("   ")), DEFAULT_PROMPT);
+        assert_eq!(
+            resolve_prompt(&args(&["   "]), Some("env prompt")),
+            "env prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_rejects_control_chars_and_overlong_input() {
+        assert_eq!(
+            resolve_prompt(&args(&["a\0b"]), Some("env prompt")),
+            "env prompt"
+        );
+        assert_eq!(
+            resolve_prompt(&args(&["a\u{1b}b"]), Some("env prompt")),
+            "env prompt"
+        );
+        let long = "x".repeat(MAX_PROMPT_CHARS + 1);
+        assert_eq!(resolve_prompt(&[], Some(&long)), DEFAULT_PROMPT);
+        assert_eq!(
+            resolve_prompt(&args(&["hello\nworld"]), None),
+            "hello\nworld"
+        );
     }
 
     #[test]

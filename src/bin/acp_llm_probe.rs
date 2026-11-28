@@ -198,6 +198,21 @@ fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
     args
 }
 
+/// Characters that can wrap a key or a value in a URL / JSON / shell log line.
+const REDACTION_WRAPPERS: &[char] = &['"', '\'', '`', '(', ')', '[', ']', '{', '}', ',', '\\'];
+
+/// Reduce the left-hand side of a `key=value` / `key:value` token to a bare
+/// key. Wrappers are stripped from both ends first, then the last URL/JSON
+/// separator is dropped, so `?token`, `"api_key"`, `{"api_key"` and
+/// `['access_token']` all match the same key list. Kept pure so URL / JSON /
+/// quoted boundaries are regression-testable without a subprocess.
+fn redaction_key(raw: &str) -> &str {
+    let unwrapped = raw.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+    unwrapped
+        .rfind(['?', '&', '(', '[', '{'])
+        .map_or(unwrapped, |index| &unwrapped[index + 1..])
+}
+
 /// Mask credential-like values in a subprocess log line.
 ///
 /// A pure function: the redaction policy must be testable without spawning
@@ -231,7 +246,7 @@ fn redact_secrets(line: &str) -> String {
         let mut masked = false;
         for sep in ['=', ':'] {
             if let Some((key, _value)) = token.split_once(sep) {
-                let key = key.trim_start_matches(['?', '&', '(', '[']);
+                let key = redaction_key(key);
                 if SECRET_KEYS
                     .iter()
                     .any(|candidate| key.eq_ignore_ascii_case(candidate))
@@ -247,12 +262,15 @@ fn redact_secrets(line: &str) -> String {
         if masked {
             continue;
         }
-        // Bare provider keys and AWS access key ids.
-        if lower.starts_with("sk-") || lower.starts_with("ghp_") || lower.starts_with("gho_") {
+        // Bare provider keys and AWS access key ids; wrappers around a value
+        // must not hide it (`"sk-…"`, `['sk-…']`).
+        let bare = lower.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+        if bare.starts_with("sk-") || bare.starts_with("ghp_") || bare.starts_with("gho_") {
             out.push_str("[REDACTED]");
             continue;
         }
-        if token.len() == 20 && token.as_bytes().starts_with(b"AKIA") {
+        // `bare` comes from the lowercased token, so compare in lowercase.
+        if bare.len() == 20 && bare.starts_with("akia") {
             out.push_str("[REDACTED]");
             continue;
         }
@@ -450,22 +468,42 @@ impl AcpFailureKind {
 
 /// Render a failure with its class and next step. Pure so tests can assert
 /// that every class carries a distinct, actionable recovery line.
+///
+/// Backend errors are raw ACP / model text, so the message is redacted before
+/// it is embedded; masking only the message preserves the two-line layout.
 fn format_failure(message: &str) -> String {
     let kind = AcpFailureKind::classify(message);
+    // Redact per line so a multi-line backend error keeps its original layout.
+    let safe_message = message
+        .split_inclusive('\n')
+        .map(|line| {
+            if let Some(body) = line.strip_suffix('\n') {
+                format!("{}\n", redact_secrets(body))
+            } else {
+                redact_secrets(line)
+            }
+        })
+        .collect::<String>();
     format!(
-        "[{}] {message}\n  recovery: {}",
+        "[{}] {safe_message}\n  recovery: {}",
         kind.label(),
         kind.recovery()
     )
 }
 
 /// 失敗の class / recovery hint は診断情報なので stderr へ。
-/// テキストは従来の `eprintln!` と同一（failure exit status も不変）。
+/// 書式・ストリーム・failure exit status は不変（生エラーのみ redact 済み）。
 fn report_failure(error: &str) {
     emit(
         ProbeStream::Stderr,
         &format!("acp_llm_probe: {}", format_failure(error)),
     );
+}
+
+/// Payload carried by `main`'s `Err`. Rust's `Termination` prints that value
+/// to stderr as well, so raw ACP/model tokens must be masked here too.
+fn failure_error_payload(error: &str) -> String {
+    redact_secrets(error)
 }
 
 /// step 数と回答本文はパイプ可能な結果なので stdout へ。
@@ -544,6 +582,13 @@ async fn acp_prompt_over(
     acp_prompt_over_with_correlation(prompt, transport, DshCorrelation::offline()).await
 }
 
+/// Kill then wait: `wait()` reaps the child so no zombie is left behind.
+/// Mirrors `shutdown_child` in `acp_probe` / `acp_multi_turn_probe`.
+async fn reap_child(child: &mut tokio::process::Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await; // reap so no zombie is left behind
+}
+
 /// Ask the ACP agent one prompt in a fresh session and return its message body.
 async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
     let (dsh_path, child_path) = dsh_command_parts()?;
@@ -555,15 +600,24 @@ async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|error| error.to_string())?;
-    let correlation = DshCorrelation::new(child.id().ok_or("no pid")?);
-    let stderr = child.stderr.take().ok_or("no stderr")?;
-    let capture = spawn_stderr_capture(stderr, correlation.clone());
-    let stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
 
-    let body = acp_prompt_over_with_correlation(prompt, transport, correlation.clone()).await;
-    let _ = child.kill().await;
+    // Everything after spawn lives in one fallible block, so even `no pid` /
+    // `no stdio` early returns still fall through to the reap below.
+    let pipeline = async {
+        let correlation = DshCorrelation::new(child.id().ok_or("no pid")?);
+        let stderr = child.stderr.take().ok_or("no stderr")?;
+        let capture = spawn_stderr_capture(stderr, correlation.clone());
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+        let body = acp_prompt_over_with_correlation(prompt, transport, correlation.clone()).await;
+        Ok::<_, String>((capture, correlation, body))
+    }
+    .await;
+
+    reap_child(&mut child).await;
+
+    let (capture, correlation, body) = pipeline?;
     // Closing the pipe ends the drain; awaiting it guarantees every captured
     // line is present before the correlation report is printed.
     let _ = capture.await;
@@ -597,10 +651,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(run) => run,
         Err(error) => {
             // Provider/ACP failures reach here as opaque strings. Print the
-            // classified recovery hint before exiting; keep returning the
-            // original error so the probe's failure exit status is unchanged.
-            report_failure(&error.to_string());
-            return Err(error.into());
+            // classified recovery hint, then return a redacted payload: Rust's
+            // Termination prints the `Err` value to stderr too. The failure
+            // exit status is unchanged.
+            let raw = error.to_string();
+            report_failure(&raw);
+            return Err(failure_error_payload(&raw).into());
         }
     };
     report_success(run.steps.len(), &run.final_text);
@@ -622,8 +678,9 @@ mod tests {
 
     use super::{
         AcpFailureKind, DshCorrelation, ProbeStream, acp_prompt_over,
-        acp_prompt_over_with_correlation, format_failure, redact_secrets, report_failure,
-        report_success, spawn_stderr_capture, start_capture, take_capture,
+        acp_prompt_over_with_correlation, failure_error_payload, format_failure, redact_secrets,
+        redaction_key, report_failure, report_success, spawn_stderr_capture, start_capture,
+        take_capture,
     };
 
     const SESSION_ID: &str = "probe-session";
@@ -833,6 +890,68 @@ mod tests {
         let masked = redact_secrets("key AKIAIOSFODNN7EXAMPLE ok");
         assert!(!masked.contains("AKIA"), "masked: {masked}");
         assert!(masked.contains("ok"), "masked: {masked}");
+    }
+
+    #[test]
+    fn redaction_key_strips_url_json_and_quote_wrappers() {
+        assert_eq!(redaction_key("?token"), "token");
+        assert_eq!(redaction_key("&access_token"), "access_token");
+        assert_eq!(redaction_key("\"api_key\""), "api_key");
+        assert_eq!(redaction_key("{\"api_key\""), "api_key");
+        assert_eq!(redaction_key("['refresh_token'"), "refresh_token");
+        assert_eq!(redaction_key("api_key"), "api_key");
+    }
+
+    #[test]
+    fn redaction_masks_url_json_and_quoted_values() {
+        let cases = [
+            "https://host/path?api_key=sk-leaked-url",
+            "\"api_key\":\"sk-leaked-json\"",
+            "{'token': 'sk-leaked-quoted'}",
+            "api_key=\"sk-leaked-dq\"",
+            "token='abcd'",
+        ];
+        for case in cases {
+            let masked = redact_secrets(case);
+            assert!(
+                masked.contains("[REDACTED]")
+                    && !masked.contains("sk-leaked")
+                    && !masked.contains("abcd"),
+                "unmasked boundary: {case} -> {masked}"
+            );
+        }
+        // The original `?token=` contract is unchanged.
+        assert_eq!(redact_secrets("?token=abcd"), "token=[REDACTED]");
+    }
+
+    #[test]
+    fn failure_report_masks_raw_model_error_before_output() {
+        let raw = "auth failure: api_key=sk-leaked-failure";
+        let formatted = format_failure(raw);
+        assert!(
+            formatted.contains("api_key=[REDACTED]") && !formatted.contains("sk-leaked-failure"),
+            "raw error leaked into failure text: {formatted}"
+        );
+
+        start_capture();
+        report_failure(raw);
+        let lines = take_capture();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].0, ProbeStream::Stderr);
+        assert!(
+            !lines[0].1.contains("sk-leaked-failure") && lines[0].1.contains("[REDACTED]"),
+            "failure output leaked: {}",
+            lines[0].1
+        );
+    }
+
+    #[test]
+    fn failure_exit_payload_carries_no_raw_token() {
+        let payload = failure_error_payload("AuthRequired: token=sk-leaked-exit");
+        assert!(
+            !payload.contains("sk-leaked-exit") && payload.contains("token=[REDACTED]"),
+            "raw token leaked into Err payload: {payload}"
+        );
     }
 
     #[test]
