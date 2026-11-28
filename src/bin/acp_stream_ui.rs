@@ -364,6 +364,8 @@ impl StartupErrorKind {
 /// `on_window_closed`. `biased` keeps cancellation ahead of ACP work when both
 /// are ready at once (e.g. the window closed before the turn started), so a
 /// closed window can never leave an in-flight `connect_with`/`prompt` behind.
+/// Turn errors are masked by `redact_secrets` before they reach `status`, so a
+/// credential echoed in an ACP error cannot leak into the GPUI status label.
 async fn run_acp_turn(
     transport: impl ConnectTo<Client> + 'static,
     cwd: PathBuf,
@@ -423,7 +425,7 @@ async fn run_acp_turn(
         result = connect => {
             match result {
                 Ok(reason) => format!("turn finished: {reason}"),
-                Err(error) => format!("turn error: {error}"),
+                Err(error) => format!("turn error: {}", redact_secrets(&error.to_string())),
             }
         }
     }
@@ -1201,6 +1203,54 @@ mod tests {
             "ordinary text is preserved: {}",
             rendered[1]
         );
+    }
+
+    // ---- Turn errors are redacted before reaching GPUI status -------------
+
+    /// An ACP-level failure is rendered by `run_acp_turn` into a status line.
+    /// The fake agent answers `initialize` with a protocol error carrying an
+    /// API key, so the offline transport exercises the exact Err branch that
+    /// used to forward the raw provider credential into the status label.
+    #[tokio::test]
+    async fn turn_error_status_masks_secrets() {
+        use agent_client_protocol::{Channel, Error};
+
+        let (client_channel, agent_channel) = Channel::duplex();
+        tokio::spawn(async move {
+            let builder = Agent
+                .builder()
+                .name("offline-error-agent")
+                .on_receive_request(
+                    async move |_request: InitializeRequest, responder, _cx| {
+                        responder.respond_with_error(Error::new(-32603, "api_key=sk-leaked-turn"))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                );
+            let _ = builder.connect_to(agent_channel).await;
+        });
+
+        let buffer = Arc::new(Mutex::new(StreamBuffer::default()));
+        let signal = StreamSignal::default();
+        let correlation = DshCorrelation::offline();
+        let done = signal.done.clone();
+
+        let status = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_acp_turn(
+                client_channel,
+                PathBuf::from("/tmp/acp-stream-ui"),
+                "prompt".to_string(),
+                &buffer,
+                &signal,
+                &correlation,
+                &done,
+            ),
+        )
+        .await
+        .expect("a rejected initialize must end the turn promptly");
+        assert!(status.starts_with("turn error:"), "{status}");
+        assert!(status.contains("[REDACTED]"), "{status}");
+        assert!(!status.contains("sk-leaked-turn"), "{status}");
     }
 
     // ---- Window close cancels the ACP producer ----------------------------

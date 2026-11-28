@@ -120,7 +120,7 @@ async fn multi_turn_over_with_correlation(
             },
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| redact_secrets(&error.to_string()))
 }
 
 /// Send every prompt on one ACP session over an arbitrary transport.
@@ -142,7 +142,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let prompts = ["remember: blue", "what color did I say?"];
 
-    let (dsh_path, child_path) = dsh_command_parts()?;
+    let (dsh_path, child_path) = dsh_command_parts()
+        .map_err(|error| Box::<dyn std::error::Error>::from(redact_secrets(&error)))?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
     scrub_child_env(&mut cmd);
@@ -150,7 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| Box::<dyn std::error::Error>::from(redact_secrets(&error.to_string())))?;
 
     // Capture stderr before any fallible work starts. `child.id()` is always
     // Some after a successful spawn; the fallback only keeps the correlation
@@ -202,7 +205,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = capture.await;
     }
     correlation.flush();
-    result?;
+    // Last line of defence: `Termination` prints whatever `main` returns.
+    result
+        .map_err(|error| Box::<dyn std::error::Error>::from(redact_secrets(&error.to_string())))?;
     Ok(())
 }
 

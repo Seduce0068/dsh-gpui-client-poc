@@ -252,7 +252,7 @@ async fn acp_prompt_over_with_correlation(
             Ok(text)
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| redact_secrets(&error.to_string()))
 }
 
 /// Run the ACP handshake and a single prompt over an arbitrary transport,
@@ -271,16 +271,19 @@ async fn acp_prompt_over(
 
 /// Ask the ACP agent one prompt in a fresh session and return its message body.
 async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
-    let (dsh_path, child_path) = dsh_command_parts()?;
+    let (dsh_path, child_path) = dsh_command_parts().map_err(|error| redact_secrets(&error))?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
     scrub_child_env(&mut cmd);
-    let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))?;
+    let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))
+        .map_err(|error| redact_secrets(&error))?;
     cmd.args(dsh_cli_args(patch.as_deref()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().map_err(|error| error.to_string())?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| redact_secrets(&error.to_string()))?;
 
     // Everything after spawn lives in one fallible block, so even `no pid` /
     // `no stdio` early returns still fall through to the reap below.
@@ -298,7 +301,8 @@ async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
 
     reap_child(&mut child).await;
 
-    let (capture, correlation, body) = pipeline?;
+    let (capture, correlation, body) =
+        pipeline.map_err(|error| redact_secrets(&error.to_string()))?;
     // Closing the pipe ends the drain; awaiting it guarantees every captured
     // line is present before the correlation report is printed.
     let _ = capture.await;
@@ -309,8 +313,18 @@ async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Context::root("acp-llm-probe");
-    let (tools, _) = provide_tools(&ctx).await?;
-    let llm = provide_llm(&ctx).await?;
+    // Set-up failures also travel through `main`'s `Result`, whose `Termination`
+    // implementation prints them to stderr: mask them before `?` converts them.
+    let (tools, _) = provide_tools(&ctx)
+        .await
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            redact_secrets(&error.to_string()).into()
+        })?;
+    let llm = provide_llm(&ctx)
+        .await
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            redact_secrets(&error.to_string()).into()
+        })?;
 
     let provider = from_async_text("acp", "dsh-acp", |request: LlmRequest| async move {
         let last = request

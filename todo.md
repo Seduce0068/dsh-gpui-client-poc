@@ -21,6 +21,58 @@ verified:
 
 ## 未着手
 
+### 優先度: 高（swarm-unlimited 2026-11-28 最終バックログ補充で追加）
+
+- [x] `redact-separate-token-values` — `redact_secrets` が `password: hunter2` /
+  `api_key = mykey` / `token: abc123` のようにキーと値が別トークンのケースで
+  値をマスクしない。キー一致時に後続トークンを値として消費するよう修正し
+  境界テストを追加。根拠 `src/acp_launch.rs:143-157,173` / FINAL-SEC / confirmed。
+- [x] `probe-main-error-redaction` — `acp_probe` / `acp_prompt_probe` /
+  `acp_multi_turn_probe` / `acp_stream_probe`（＋ `acp_llm_probe` の set up）が
+  main の `Err` ペイロードを生文字列で Return し、Rust の Termination が
+  stderr へ再出力する。redact 済み文字列を Err 側へ渡す共有ヘルパーを追加。
+  根拠 `src/bin/acp_probe.rs:120`, `src/bin/acp_prompt_probe.rs:78,137`,
+  `src/bin/acp_multi_turn_probe.rs:123,205`, `src/bin/acp_stream_probe.rs:108,170` /
+  FINAL-SEC / confirmed。
+
+### 優先度: 中（swarm-unlimited 2026-11-28 最終バックログ補充で追加）
+
+- [x] `stream-ui-error-redaction` — `run_acp_turn` の Err 枝が `turn error: {error}`
+  を生文字列で GPUI 画面ステータスへ表示する。redact してから status へ渡し
+  回帰テスト追加。根拠 `src/bin/acp_stream_ui.rs:423-428,517` / FINAL-SEC / confirmed。
+- [ ] `shared-reap-test-relocation` — `src/acp_launch.rs` の tests が6バイナリへ
+  include され、実 `sleep 30` を6回 spawn する。reap の subprocess テストを
+  `src/bin/acp_probe.rs` の tests へ移して1回だけ実行する。
+  根拠 `src/acp_launch.rs:498-507` / FINAL-TEST / confirmed。
+- [x] `investigation-version-sync` — `investigation/README.md:26` と
+  `cross-review/README.md:75` の cordis-rs `v0.62.0` は現行 `v0.426.0` と不一致。
+  現行値へ更新するか過去スナップショット明記。併せて `investigation/README.md:28-31`
+  の「未実装」記述と件数 (87/351) の矛盾を現状/根拠へ整合。
+  根拠 `Cargo.toml:10`, `README.md:67,192`, `investigation/README.md:10,18` /
+  FINAL-DOCS / confirmed（件数は likely）。
+
+### 優先度: 低（swarm-unlimited 2026-11-28 最終バックログ補充で追加）
+
+- [ ] `smoke-gui-hardening` — 証跡 PNG の再利用誤認（撮影前に `rm -f "${png}"`）、
+  `stop_app` の無期限 wait（timeout + KILL で FAIL）、事前確認への `file` /
+  `timeout` 追加。根拠 `scripts/smoke-gui.sh:7-9,35-47,51-65,71-72,87-98` /
+  FINAL-OPS / likely。
+- [ ] `cargo-rust-version` — `rust-toolchain.toml` の MSRV 1.88.0 を
+  `Cargo.toml` の `rust-version` へ機械可読に宣言。根拠 `Cargo.toml:1-7`,
+  `rust-toolchain.toml` / FINAL-OPS / confirmed。
+- [ ] `acp-probe-readme-description` — README の `acp_probe` 説明が
+  「initialize と session/new のみ」のままだが、実装は
+  `session/request_permission` へ Cancelled 応答する。表を実体へ更新。
+  根拠 `README.md:18`, `src/bin/acp_probe.rs:83,287-288,352-382` /
+  FINAL-DOCS / confirmed。
+- [ ] `shutdown-waitfailed-label-test` — `ShutdownOutcome::WaitFailed` の
+  `SHUTDOWN = WaitFailed` 表示契約が未テスト。根拠 `src/acp_launch.rs:375-389`,
+  `src/bin/acp_probe.rs:456` / FINAL-TEST / confirmed。
+- [ ] `empty-home-dsh-boundary-tests` — `trusted_dsh_dirs` の空 HOME と
+  `dsh_candidates` の空 DSH_BIN が全候補絶対化の不変条件で未テスト。
+  根拠 `src/acp_launch.rs:26,44`, `src/bin/acp_probe.rs:505,527` /
+  FINAL-TEST / confirmed。
+
 ### 優先度: 高（swarm-unlimited 2026-11-28 review+discovery で追加）
 
 - [x] `readme-cordis-version-line179` — `README.md:179` の cordis-rs「現行」を
@@ -156,6 +208,14 @@ verified:
   キーが値 None で存在することを明示検証。fmt / check / clippy -D warnings /
   `cargo test --bins`（255 passed, 0 failed）exit 0。
   残課題: argv の `--api-key` 露出は既存 CLI 契約のため変更せず（要判断）。
+- 2026-11-28 最終バックログ補充イテレーション検証: redact 別トークン値消費
+  （Bearer 値の回帰は R4 指摘を反映し境界テスト追加）、5 probe の main Err redact、
+  stream_ui の status redact（offline duplex 回帰テスト追加）、版数・件数・説明の
+  ドキュメント整合を実施。`cargo fmt --all -- --check` / `cargo check --bins` /
+  `cargo clippy --bins --all-targets -- -D warnings` / `cargo test --bins`
+  （286 passed, 0 failed）すべて exit 0。Betterleaks git/dir hit zero。
+  markdownlint は `cross-review/README.md:44` の HEAD 既存行で失敗（今回差分なし）
+  のため baseline として区別。R4 の 20ms sleep フレーク指摘は likely のため却下。
 - [x] `acp-producer-window-shutdown` — `acp_stream_ui` の window close が
   `StreamSignal::complete()` のみで ACP プロデューサ／dsh 子の終了条件に接続されない。
   CancellationToken を `spawn_acp` へ渡し connect/prompt を中断＋kill/wait する

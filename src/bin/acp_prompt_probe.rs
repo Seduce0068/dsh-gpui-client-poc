@@ -75,7 +75,7 @@ async fn prompt_over_with_correlation(
             Ok(response.stop_reason)
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| redact_secrets(&error.to_string()))
 }
 
 /// Send one prompt on a fresh ACP session over an arbitrary transport.
@@ -99,18 +99,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env_prompt = std::env::var(PROMPT_ENV).ok();
     let prompt = resolve_prompt(&args, env_prompt.as_deref());
 
-    let (dsh_path, child_path) = dsh_command_parts()?;
+    let (dsh_path, child_path) = dsh_command_parts().map_err(|error| redact_secrets(&error))?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
     scrub_child_env(&mut cmd);
     // Optional stage-B overlay (e.g. the NVIDIA free-model patch) is injected
     // without touching the user's global profile. No secret is passed here.
-    let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))?;
+    let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))
+        .map_err(|error| redact_secrets(&error))?;
     cmd.args(dsh_cli_args(patch.as_deref()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| Box::<dyn std::error::Error>::from(redact_secrets(&error.to_string())))?;
 
     // All post-spawn steps are fallible; keep them in one block so even an
     // early `no pid` / `no stdio` return still reaches the reap below.
@@ -129,12 +132,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     reap_child(&mut child).await;
 
-    let (capture, correlation, result) = pipeline?;
+    let (capture, correlation, result) = pipeline
+        .map_err(|error| Box::<dyn std::error::Error>::from(redact_secrets(&error.to_string())))?;
     // Closing the pipe ends the drain; awaiting it guarantees every captured
     // line is present before the correlation report is printed.
     let _ = capture.await;
     correlation.flush();
-    let _stop_reason = result?;
+    let _stop_reason = result
+        .map_err(|error| Box::<dyn std::error::Error>::from(redact_secrets(&error.to_string())))?;
     Ok(())
 }
 

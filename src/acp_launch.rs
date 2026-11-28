@@ -141,7 +141,7 @@ pub(crate) fn redact_secrets(line: &str) -> String {
         }
         let mut masked = false;
         for sep in ['=', ':'] {
-            if let Some((key, _value)) = token.split_once(sep) {
+            if let Some((key, value)) = token.split_once(sep) {
                 let key = redaction_key(key);
                 if SECRET_KEYS
                     .iter()
@@ -150,6 +150,30 @@ pub(crate) fn redact_secrets(line: &str) -> String {
                     out.push_str(key);
                     out.push(sep);
                     out.push_str("[REDACTED]");
+                    // `password:` / `api_key=` / `token:` carry no value in
+                    // this token: the next whitespace-separated token is the
+                    // value. Consume it just like the `Bearer` arm does. A
+                    // `Bearer` marker is left to that arm so the existing
+                    // `Authorization: Bearer <token>` output stays unchanged.
+                    if token.ends_with(sep) {
+                        let next_is_bearer = tokens.peek().is_some_and(|next| {
+                            next.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c))
+                                .eq_ignore_ascii_case("bearer")
+                        });
+                        // `Authorization: Bearer <jwt>` is left to the Bearer
+                        // arm; an inline `api_key=Bearer <jwt>` must consume
+                        // the token after the marker so the JWT never leaks.
+                        let consume = if value.is_empty() {
+                            !next_is_bearer
+                        } else {
+                            value
+                                .trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c))
+                                .eq_ignore_ascii_case("bearer")
+                        };
+                        if consume {
+                            let _ = tokens.next();
+                        }
+                    }
                     masked = true;
                     break;
                 }
@@ -157,6 +181,41 @@ pub(crate) fn redact_secrets(line: &str) -> String {
         }
         if masked {
             continue;
+        }
+        // `api_key = mykey` puts the separator in its own whitespace token,
+        // so the key above has no inline value to split on. Consume the
+        // separator and the value token together so the value never reaches
+        // the output. Inline `api_key=sk-…` was already handled above.
+        let bare_key = redaction_key(token);
+        if SECRET_KEYS
+            .iter()
+            .any(|candidate| bare_key.eq_ignore_ascii_case(candidate))
+            && tokens
+                .peek()
+                .is_some_and(|next| *next == "=" || *next == ":")
+        {
+            if let Some(separator) = tokens.next() {
+                let value_token = tokens.next();
+                // `authorization = Bearer <jwt>`: consume the JWT as well,
+                // otherwise only the marker would be masked and the raw
+                // credential would reach the output.
+                let value_is_bearer = value_token.is_some_and(|value| {
+                    value
+                        .trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c))
+                        .eq_ignore_ascii_case("bearer")
+                });
+                if value_is_bearer {
+                    let _ = tokens.next();
+                }
+                let has_value = value_token.is_some();
+                out.push_str(token);
+                out.push(' ');
+                out.push_str(separator);
+                if has_value {
+                    out.push_str(" [REDACTED]");
+                }
+                continue;
+            }
         }
         // Bare provider keys and AWS access key ids; wrappers around a value
         // must not hide it (`"sk-…"`, `['sk-…']`).
@@ -461,8 +520,62 @@ pub(crate) fn scrub_child_env(cmd: &mut tokio::process::Command) {
 
 #[cfg(test)]
 mod tests {
-    use super::scrub_child_env;
+    use super::{redact_secrets, scrub_child_env};
     use std::ffi::OsStr;
+
+    /// Keys whose value is a separate whitespace token must not leak. Pure:
+    /// the shared module is `include`d by six binaries, so no subprocess here.
+    #[test]
+    fn redaction_masks_separate_token_values() {
+        assert_eq!(redact_secrets("password: hunter2"), "password:[REDACTED]");
+        assert_eq!(redact_secrets("api_key = mykey"), "api_key = [REDACTED]");
+        assert_eq!(redact_secrets("token: abc123"), "token:[REDACTED]");
+    }
+
+    /// Only the value token is consumed; neighbours on either side survive.
+    #[test]
+    fn redaction_consumes_only_the_following_value_token() {
+        assert_eq!(
+            redact_secrets("prefix password: hunter2 suffix"),
+            "prefix password:[REDACTED] suffix"
+        );
+        assert_eq!(
+            redact_secrets("api_key = mykey ordinary"),
+            "api_key = [REDACTED] ordinary"
+        );
+        // A trailing key with no value is a safe boundary, not a panic/leak.
+        assert_eq!(redact_secrets("password:"), "password:[REDACTED]");
+    }
+
+    /// Previously contracted shapes stay byte-identical: inline values keep
+    /// their separator, and `Bearer` still masks the token after the marker.
+    #[test]
+    fn redaction_keeps_inline_and_bearer_contracts() {
+        assert_eq!(
+            redact_secrets("api_key=sk-secret-value ordinary"),
+            "api_key=[REDACTED] ordinary"
+        );
+        assert_eq!(
+            redact_secrets("Authorization: Bearer sk-abc123"),
+            "Authorization:[REDACTED] [REDACTED]"
+        );
+    }
+
+    /// A `Bearer` value must never leave the following credential in clear
+    /// text, regardless of whether the separator is inline or its own token.
+    #[test]
+    fn redaction_masks_bearer_values_in_separate_token_shapes() {
+        for line in [
+            "authorization = Bearer eyJhbGciOiJIUzI1NiJ9",
+            "password : Bearer sk-leaked-jwt",
+            "api_key=Bearer sk-leaked-jwt",
+        ] {
+            let masked = redact_secrets(line);
+            assert!(!masked.contains("eyJhbGciOiJIUzI1NiJ9"), "{masked}");
+            assert!(!masked.contains("sk-leaked-jwt"), "{masked}");
+            assert!(masked.contains("[REDACTED]"), "{masked}");
+        }
+    }
 
     #[test]
     fn scrub_child_env_drops_node_injection_but_keeps_credentials() {

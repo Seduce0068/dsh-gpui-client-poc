@@ -15,7 +15,7 @@ ACP（Agent Client Protocol）経由で `dsh --profile acp` に接続する PoC 
 | バイナリ | 内容 |
 | --- | --- |
 | `dsh-gpui-client-poc` | GPUI による 2 ペイン（セッション一覧 + 会話）の静的 UI |
-| `acp_probe` | `initialize` と `session/new` のみを叩く接続確認 |
+| `acp_probe` | `initialize` / `session/new` に加え、`session/request_permission` へ `Cancelled` 応答する検証を含む接続確認 |
 | `acp_prompt_probe` | 実際にプロンプトを送り、stop reason を表示する確認 |
 | `cordis_bridge` | `cordis-rs` runtime 上で `command-compact` をマウントし、登録コマンドを表示するヘッドレス確認 |
 | `cordis_todo_ui` | `dsh-tool-todo` port をマウントし、`todos` projection を GPUI ウィンドウに描画する。ボタンから `todo_write` を呼ぶ |
