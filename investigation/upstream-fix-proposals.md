@@ -13,11 +13,28 @@ tags:
   - approval
   - pipeline
 generated: 2026-11-18T17:29:48+09:00
-verified: 2026-11-18T17:29:48+09:00
+verified: 2026-11-28T18:05:00+09:00
 status: current
 ---
 
 ## 結論（先に読む）
+
+### 現行状態（2026-11-28 時点）
+
+- host 側の配線は完了済み。`src/bin/cordis_agent_ui.rs:93` が
+  `pipeline: ToolPipeline` を保持し、`:102-120` の `wire_agent_loop` が
+  `provide_tools` の第2戻り値 pipeline を
+  `AgentLoop::new(..).with_pipeline(pipeline)` へ配線している。`:126` は
+  `let (tools, pipeline) = provide_tools(&ctx).await` で両方を使用する。
+  したがって「第2戻り値を捨てている」という記述は現状には当てはまらない。
+- approval guard はローカル fork（cordis-rs `94c277b`）に反映済みで、
+  現状の未解決項目ではない（`todo.md:187-189`）。
+- 上流側への取り込みは未完了。公開タグ反映時に差分を確認して取り込む方針を
+  `todo.md:187-189` に記録済み。
+- 以下は上流への修正提案と当時の調査記録を履歴として残すもので、
+  2026-11-18 時点のスナップショットである。現行状態は上記を参照。
+
+### 過去スナップショット（2026-11-18 時点）
 
 - `agent-ui-pipeline-no-gate`: 真因は `AgentLoop::run` が `ToolPipeline`
   を通らず `ToolRegistry::invoke` を直接呼ぶ設計。上流の最小修正は
@@ -54,9 +71,11 @@ status: current
   `ToolPipeline::run` を通らないため approval / middleware /
   post-execute / 実行キャンセル検査が一切適用されない。
   `AgentLoop` に pipeline フィールドも注入 API も無い。
-- host の `let (tools, _) = provide_tools(&ctx)`
-  （`src/bin/cordis_agent_ui.rs:119`）は症状であって原因ではない。
+- 2026-11-18 時点の host は `let (tools, _) = provide_tools(&ctx)`
+  （`src/bin/cordis_agent_ui.rs:119`）で第2戻り値を捨てていたが、
+  これは症状であって原因ではない。
   `investigation/round-4.md:29,34` の訂正を採用する。
+  現行状態では第2戻り値は配線済み（結論節を参照）。
 - 現行固定版 `f64f328/src/services/agent_loop.rs:68,123,305-307` では
   上流が既に修正済みであることをローカルソースで確認した。
 
@@ -137,10 +156,16 @@ let result = match &self.pipeline {
   `ToolRegistry` の handler をラップしても approval / middleware /
   post-execute / cancel check（`f64f328/src/services/tools.rs:304-399`）は
   再現できず、host に同じロジックを複製するのは fork 相当になる。
-- **現行固定版でも未配線**: 既定 pipeline は answerer 未登録のため
-  fail-open（`agent_loop.rs:64-67`、`tools.rs:253-257`）。host が第2戻り値を
-  捨てている `cordis_agent_ui.rs:119` を直さない限り gate は載らない。
-- 対話的な UI 承認に繋ぐには §2 の修正も必須である。
+- **過去スナップショット（2026-11-18 時点）**: 既定 pipeline は answerer
+  未登録のため fail-open（`agent_loop.rs:64-67`、`tools.rs:253-257`）。
+  当時は host が第2戻り値を捨てており、
+  `cordis_agent_ui.rs:119` を直さない限り gate は載らない、と記録していた。
+- **現行状態（2026-11-28 時点）**: host 側は配線済み。
+  `src/bin/cordis_agent_ui.rs:93` が `pipeline: ToolPipeline` を保持し、
+  `:102-120` の `wire_agent_loop` が `provide_tools` の第2戻り値 pipeline を
+  `AgentLoop::new(..).with_pipeline(pipeline)` へ配線、`:126` で
+  `let (tools, pipeline) = provide_tools(&ctx).await` と両方を使用する。
+- 対話的な UI 承認に繋ぐには、ローカル fork に反映済みの §2 修正も必要である。
 
 ## 2. `cordis-approval-guard-reentrancy`
 
@@ -155,7 +180,11 @@ let result = match &self.pipeline {
   writer が待機中なら std RwLock の writer 優先でブロックし得る。
 - 旧固定版 `22290d9/src/services/approval.rs:128-149` も同一。
   v0.67.0 も同一と記録され（`investigation/round-5.md:58`）、
-  現行固定版 v0.136.0 でも未修正をローカルソースで確認した。
+  現行固定版 v0.136.0 でも未修正をローカルソースで確認した
+  （以上は 2026-11-18 時点の記録）。
+- **現行状態（2026-11-28 時点）**: approval guard の修正はローカル fork
+  （cordis-rs `94c277b`）に反映済みで、現状の未解決項目ではない
+  （`todo.md:187-189`）。上流タグへの取り込みは未完了。
 
 ### 2-2. 上流側の最小修正（guard drop 位置）
 
@@ -256,18 +285,22 @@ pub fn request(
 
 1. PR-A（issue 1、現行固定版 v0.136.0 に反映済み）: `AgentLoop` への
    pipeline 注入 API 追加と `run` 内の dispatch。
-2. PR-B（issue 2、未反映・最優先）: `ApprovalService::request` の
-   guard スナップショットと callback 前 drop。
+2. PR-B（issue 2、ローカル fork 反映済み／上流取り込み未完了）:
+   `ApprovalService::request` の guard スナップショットと callback 前 drop。
+   `todo.md:187-189` の方針に従い、公開タグ反映時に上流差分を確認する。
 3. PR-C（任意・破壊的）: answerer / request の async 化と
    `ApprovalRequest` への tool 引数追加。
 
 ## 検証と未実施事項
 
-- 本レポートは新規ファイル1件のみの作成で、既存ファイルは未変更。
+- 2026-11-18 時点では本レポート1件のみの作成で、既存ファイルは未変更だった。
+  2026-11-28 に本文へ現行状態の追記と `verified` の更新を行った
+  （変更は当ファイルのみ）。
 - 参照したコード断片と行番号はローカル固定版ソースを read して確認した
   （Runtime Proof）。上流リポジトリへの PR 作成は行っていない。
-- 文字検証: `markdownlint investigation/upstream-fix-proposals.md` を
-  実行し、exit code 0（警告なし）を確認した。
+- 文字検証: 2026-11-18 時点で
+  `markdownlint investigation/upstream-fix-proposals.md` を実行し、
+  exit code 0（警告なし）を確認した。2026-11-28 の追記分は未検証。
 - Rust の compile / test は本タスクでコード変更がないため未実施。
 
 ## 根拠ファイル

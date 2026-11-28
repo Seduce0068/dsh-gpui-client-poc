@@ -128,15 +128,22 @@ verified:
   `src/bin/acp_llm_probe.rs:175-190` / DS-R3-TQ01 / confirmed。
   検証（2026-11-28 親）: `patch_path_validation_distinguishes_unset_from_typo` pass。
   共有モジュール化ではなく同ファイル内ヘルパーで実装（完全共有は残タスク）。
-- [ ] `ci-audit-doc-conflict` — `ci.yml:26` の `audit: false` は README の受容判断と
+- [x] `ci-audit-doc-conflict` — `ci.yml:26` の `audit: false` は README の受容判断と
   整合するが、`todo.md:100-101` は `audit: true` 追加完了を記録している。
   どちらが現行契約かを確定し、記録を実態へ統一（CI 設定自体の変更は方針判断）。
   根拠 `.github/workflows/ci.yml:26`, `README.md:76-87`, `todo.md:100-101` /
   RV-R3-DE01 / confirmed。
-- [ ] `upstream-fix-proposals-stale` — 「現行固定版でも未配線」「第2戻り値を捨てている」
+  裁定（2026-11-28 親）: 現行契約は `audit: false`（README:76-87 の受容判断、
+  `ci.yml:26` と一致）。旧完了行 `audit: true` は当時の履歴として保持し、
+  現行契約を明示した。CI 設定の変更なし（方針変更はユーザー判断）。
+- [x] `upstream-fix-proposals-stale` — 「現行固定版でも未配線」「第2戻り値を捨てている」
   という記述は `src/bin/cordis_agent_ui.rs:93,102-120,126` の配線済み実装と矛盾。
   現状へ更新するか過去スナップショットとして日付・commit を明記。
   根拠 `investigation/upstream-fix-proposals.md:140-142` / RV-R5-DC01 / confirmed。
+  検証（2026-11-28 親）: 結論節に現行状態（配線済み／ローカル fork 反映済み／
+  上流取り込み未完了）を先出しし、旧記述は過去スナップショットとして保持。
+  `markdownlint investigation/upstream-fix-proposals.md` exit 0、親が
+  `cordis_agent_ui.rs:93,102-120,126` を実読して一致を確認。
 - [ ] `dsh-child-env-scrub` — PATH のみ固定し `NODE_OPTIONS` / `NODE_PATH` 等が
   dsh 子プロセスへ継承される。`env_clear()` + 必要最小限の明示設定と
   argv 経由の秘密露出（--api-key）の扱いを整理。
