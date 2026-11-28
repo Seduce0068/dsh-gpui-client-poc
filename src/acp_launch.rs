@@ -23,7 +23,10 @@ pub(crate) const MINIMAL_PATH_DIRS: &[&str] = &["/usr/local/bin", "/usr/bin", "/
 /// The ambient `PATH` is intentionally never consulted.
 pub(crate) fn trusted_dsh_dirs(home: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(home) = home.filter(|home| !home.as_os_str().is_empty()) {
+    // Only absolute home paths contribute user directories; relative or empty
+    // values are ignored so every candidate stays absolute (no hijackable
+    // relative dir can slip in via a poisoned HOME).
+    if let Some(home) = home.filter(|home| home.is_absolute()) {
         dirs.push(home.join(".npm-global/bin"));
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".local/share/mise/shims"));
@@ -60,7 +63,25 @@ pub(crate) fn resolve_dsh_from(
 ) -> Result<PathBuf, String> {
     dsh_candidates(dsh_bin, cwd, search_dirs)
         .into_iter()
-        .find(|path| path.is_file())
+        .find(|path| {
+            if !path.is_file() {
+                return false;
+            }
+            // On Unix, a file must also carry an execute bit to be usable as
+            // `dsh`; otherwise skip it and try the next candidate.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                match path.metadata() {
+                    Ok(meta) => meta.permissions().mode() & 0o111 != 0,
+                    Err(_) => false,
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
         .ok_or_else(|| {
             "dsh executable not found in trusted locations; set DSH_BIN to its absolute path"
                 .to_owned()
@@ -445,7 +466,10 @@ pub(crate) async fn shutdown_child(
     match tokio::time::timeout(grace, child.wait()).await {
         Ok(Ok(_status)) => ShutdownOutcome::Exited,
         Ok(Err(error)) => {
-            emit(ProbeStream::Stderr, &format!("child wait failed: {error}"));
+            emit(
+                ProbeStream::Stderr,
+                &format!("child wait failed: {}", redact_secrets(&error.to_string())),
+            );
             ShutdownOutcome::WaitFailed
         }
         Err(_elapsed) => {
@@ -516,12 +540,19 @@ pub(crate) fn resolve_prompt_with_default(
 pub(crate) fn scrub_child_env(cmd: &mut tokio::process::Command) {
     cmd.env_remove("NODE_OPTIONS");
     cmd.env_remove("NODE_PATH");
+    cmd.env_remove("LD_PRELOAD");
+    cmd.env_remove("LD_LIBRARY_PATH");
+    cmd.env_remove("LD_AUDIT");
+    cmd.env_remove("DYLD_INSERT_LIBRARIES");
+    cmd.env_remove("DYLD_LIBRARY_PATH");
+    cmd.env_remove("DYLD_FRAMEWORK_PATH");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_secrets, scrub_child_env};
+    use super::{redact_secrets, resolve_dsh_from, scrub_child_env, trusted_dsh_dirs};
     use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
 
     /// Keys whose value is a separate whitespace token must not leak. Pure:
     /// the shared module is `include`d by six binaries, so no subprocess here.
@@ -582,6 +613,12 @@ mod tests {
         let mut cmd = tokio::process::Command::new("dsh");
         cmd.env("NODE_OPTIONS", "--require /tmp/payload.js")
             .env("NODE_PATH", "/tmp/modules")
+            .env("LD_PRELOAD", "/tmp/evil.so")
+            .env("LD_LIBRARY_PATH", "/tmp/lib")
+            .env("LD_AUDIT", "/tmp/audit.so")
+            .env("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib")
+            .env("DYLD_LIBRARY_PATH", "/tmp/dylib")
+            .env("DYLD_FRAMEWORK_PATH", "/tmp/fw")
             .env("DEEPSEEK_API_KEY", "placeholder-not-a-real-key");
         scrub_child_env(&mut cmd);
         // `env_remove` records the key with a `None` value; assert that exact
@@ -598,11 +635,69 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key.to_str() == Some(name) && value.is_none())
         };
-        assert!(removed("NODE_OPTIONS"));
-        assert!(removed("NODE_PATH"));
+        for name in [
+            "NODE_OPTIONS",
+            "NODE_PATH",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FRAMEWORK_PATH",
+        ] {
+            assert!(removed(name), "{name} must be removed");
+        }
         assert_eq!(
             value("DEEPSEEK_API_KEY"),
             Some(OsStr::new("placeholder-not-a-real-key"))
         );
+    }
+
+    #[test]
+    fn trusted_dsh_dirs_ignores_relative_and_empty_home() {
+        let dirs = trusted_dsh_dirs(Some(Path::new("relative/home")));
+        assert!(dirs.iter().all(|dir| dir.is_absolute()));
+        assert!(
+            !dirs
+                .iter()
+                .any(|dir| dir.to_string_lossy().contains("relative/home"))
+        );
+        let dirs = trusted_dsh_dirs(Some(Path::new("")));
+        assert!(dirs.iter().all(|dir| dir.is_absolute()));
+        let dirs = trusted_dsh_dirs(None);
+        assert!(dirs.iter().all(|dir| dir.is_absolute()));
+        assert!(!dirs.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_dsh_from_skips_non_executable_file() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("acp-launch-exec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        // Non-executable file must be skipped (and report missing when it is
+        // the only candidate).
+        let nonexec = dir.join("dsh");
+        fs::write(&nonexec, "#!/bin/sh\nexit 0\n").expect("write nonexec");
+        let mut perms = fs::metadata(&nonexec).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&nonexec, perms).unwrap();
+        let res = resolve_dsh_from(Some(&nonexec), &PathBuf::from("/"), &[]);
+        assert!(res.is_err(), "non-executable file must be skipped");
+
+        // Executable file resolves.
+        let exec = dir.join("dsh-exec");
+        fs::write(&exec, "#!/bin/sh\nexit 0\n").expect("write exec");
+        let mut perms = fs::metadata(&exec).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&exec, perms).unwrap();
+        let resolved =
+            resolve_dsh_from(Some(&exec), &PathBuf::from("/"), &[]).expect("resolve exec");
+        assert_eq!(resolved, exec);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

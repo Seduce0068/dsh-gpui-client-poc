@@ -534,6 +534,15 @@ mod tests {
         let tmp = TestTempDir::new("pathpin-resolve");
         let fake = tmp.path().join("dsh");
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("write fake dsh");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake)
+                .expect("metadata fake dsh")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake, perms).expect("chmod fake dsh");
+        }
 
         let resolved = super::resolve_dsh_from(Some(&fake), &PathBuf::from("/"), &[])
             .expect("resolve fake dsh");
