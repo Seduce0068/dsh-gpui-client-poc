@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-28T15:52:00+09:00"
+  at: "2026-11-28T16:07:00+09:00"
 ---
 
 ## 進行中
@@ -77,12 +77,16 @@ verified:
   検証（2026-11-28 親）: `failure_report_masks_raw_model_error_before_output` と
   `model_error_outcome_is_redacted_before_stdout` が pass。生エラーの redact を実装で確認、
   複数行の書式は split_inclusive で維持。
-- [ ] `open-window-result-ignored` — 9 バイナリが `cx.open_window` の Result を破棄しつつ
+- [x] `open-window-result-ignored` — 9 バイナリが `cx.open_window` の Result を破棄しつつ
   無条件で「GPUI window created」と出力。失敗時に成功と見える診断を修正
   （`cordis_todo_ui.rs:257`, `cordis_title_ui.rs:113` の判定例を参照）。
   根拠 `src/bin/cordis_prompt_agent_ui.rs:302-303`,
   `src/bin/cordis_retry_ui.rs:272-273`, `src/bin/cordis_agent_ui.rs:281-282` ほか /
   RV-R4-OB01 / confirmed。
+  検証（2026-11-28 親）: 9 バイナリ全てで Result を match し、純粋ヘルパー
+  `window_log_line` の成功/失敗テストを追加。`cargo fmt --all -- --check` /
+  `cargo check --bins` / `cargo clippy --bins --all-targets -- -D warnings` /
+  `cargo test --bins`（249 passed, 0 failed）すべて exit 0。R4 独立レビューは指摘なし。
 - [x] `readme-stage-b-stale` — README が実 LLM 本文を「未確認」とするが、
   `investigation/stage-b-nvidia-result.md:14-19` で NVIDIA 無料モデルによる
   本文非空 `2` / `EndTurn` は実証済み（`todo.md:160` も完了）。ACP 節と未確認節を

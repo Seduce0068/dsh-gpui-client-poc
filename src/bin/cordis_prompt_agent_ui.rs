@@ -261,6 +261,17 @@ async fn build_agent() -> Result<Arc<AgentLoop>, String> {
     Ok(PromptAgentRig::build().await?.agent)
 }
 
+/// Single source for the window-creation log line. Kept pure so the
+/// success/failure wording is regression-testable, matching the other cordis
+/// GPUI demos; the binary-name prefix stays at the call site.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -299,8 +310,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .detach();
-        let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
-        eprintln!("cordis_prompt_agent_ui: GPUI window created");
+        match cx.open_window(Default::default(), |_window, _cx| panel.clone()) {
+            Ok(_window) => eprintln!("cordis_prompt_agent_ui: {}", window_log_line(true, "")),
+            Err(error) => eprintln!(
+                "cordis_prompt_agent_ui: {}",
+                window_log_line(false, &error.to_string())
+            ),
+        }
     });
     Ok(())
 }
@@ -309,6 +325,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use cordis_rs::core_services::{CompactionConfig, LlmRequest, SessionStore, TokenMeter};
+
+    #[test]
+    fn window_log_line_reports_success_and_failure() {
+        let success = window_log_line(true, "");
+        let failure = window_log_line(false, "no display");
+        assert_eq!(success, "GPUI window created");
+        assert_eq!(failure, "failed to create window: no display");
+    }
 
     #[tokio::test]
     async fn agent_replies_to_a_prompt() {

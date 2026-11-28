@@ -257,6 +257,17 @@ impl Render for RetryPanel {
     }
 }
 
+/// Single source for the window-creation log line. The success wording keeps
+/// the existing local-stub / NOT-ACP note; failures report the GPUI error. Kept
+/// pure so both cases are regression-tested, with the prefix at the call site.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created (local stub retry demo, NOT ACP)".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
 fn main() {
     let report = run_agent().unwrap_or_else(|error| RetryReport {
         attempts: 0,
@@ -269,14 +280,30 @@ fn main() {
         let panel = cx.new(|_cx| RetryPanel {
             report: report.clone(),
         });
-        let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
-        eprintln!("cordis_retry_ui: GPUI window created (local stub retry demo, NOT ACP)");
+        match cx.open_window(Default::default(), |_window, _cx| panel.clone()) {
+            Ok(_window) => eprintln!("cordis_retry_ui: {}", window_log_line(true, "")),
+            Err(error) => eprintln!(
+                "cordis_retry_ui: {}",
+                window_log_line(false, &error.to_string())
+            ),
+        }
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_log_line_keeps_scope_note_and_reports_failure() {
+        let success = window_log_line(true, "");
+        let failure = window_log_line(false, "no display");
+        assert_eq!(
+            success,
+            "GPUI window created (local stub retry demo, NOT ACP)"
+        );
+        assert_eq!(failure, "failed to create window: no display");
+    }
 
     fn success_report() -> RetryReport {
         RetryReport {

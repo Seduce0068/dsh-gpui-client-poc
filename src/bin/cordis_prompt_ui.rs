@@ -31,6 +31,16 @@ use gpui::{
     Window, canvas, div, prelude::*, rgb,
 };
 
+/// Single source for the window-creation log line, kept pure so the
+/// success/failure wording is regression-tested.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
 /// Echo provider: the assistant repeats the user's prompt as tool-free text.
 fn echo_provider() -> LlmProvider {
     LlmProvider::new(
@@ -462,14 +472,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .detach();
         let root = panel.clone();
-        let _ = cx.open_window(Default::default(), |window, app| {
+        match cx.open_window(Default::default(), |window, app| {
             // 入力欄をフォーカスしないと handle_input が登録されず、IME 確定文字が届かない。
             if let Some(focus_handle) = &root.read(app).focus_handle {
                 focus_handle.focus(window);
             }
             root.clone()
-        });
-        eprintln!("cordis_prompt_ui: GPUI window created");
+        }) {
+            Ok(_window) => eprintln!("cordis_prompt_ui: {}", window_log_line(true, "")),
+            Err(error) => eprintln!(
+                "cordis_prompt_ui: {}",
+                window_log_line(false, &error.to_string())
+            ),
+        }
     });
     Ok(())
 }
@@ -477,6 +492,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_log_line_success_keeps_existing_message() {
+        assert_eq!(window_log_line(true, ""), "GPUI window created");
+    }
+
+    #[test]
+    fn window_log_line_failure_reports_error_detail() {
+        assert_eq!(
+            window_log_line(false, "display unavailable"),
+            "failed to create window: display unavailable"
+        );
+    }
 
     #[test]
     fn prompt_panel_accumulates_and_submits() {

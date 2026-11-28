@@ -23,6 +23,16 @@ use gpui::{
     App, Application, Context as GpuiContext, Render, SharedString, Window, div, prelude::*, rgb,
 };
 
+/// Single source for the window-creation log line, kept pure so the
+/// success/failure wording is regression-tested.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
 /// Base directory for persistent state, following the XDG state-home
 /// convention: `$XDG_STATE_HOME` when it is absolute, otherwise
 /// `$HOME/.local/state` (temp dir only as a last resort).
@@ -561,8 +571,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // wipe, so neither a concurrent run nor a later restart erases state.
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| CompositionPanel::new(lines.clone()));
-        let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
-        eprintln!("cordis_composition_ui: GPUI window created");
+        match cx.open_window(Default::default(), |_window, _cx| panel.clone()) {
+            Ok(_window) => eprintln!("cordis_composition_ui: {}", window_log_line(true, "")),
+            Err(error) => eprintln!(
+                "cordis_composition_ui: {}",
+                window_log_line(false, &error.to_string())
+            ),
+        }
     });
     Ok(())
 }
@@ -570,6 +585,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_log_line_success_keeps_existing_message() {
+        assert_eq!(window_log_line(true, ""), "GPUI window created");
+    }
+
+    #[test]
+    fn window_log_line_failure_reports_error_detail() {
+        assert_eq!(
+            window_log_line(false, "display unavailable"),
+            "failed to create window: display unavailable"
+        );
+    }
 
     fn test_base(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(

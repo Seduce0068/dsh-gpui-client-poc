@@ -190,6 +190,17 @@ async fn prepare_panel(
     }
 }
 
+/// Single source for the window-creation log line. The checked `open_window`
+/// result feeds this helper, so success and failure wording stays identical
+/// across the GPUI demo binaries.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let env_path = std::env::var(PATH_ENV).ok();
@@ -209,8 +220,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| panel.clone());
-        let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
-        eprintln!("cordis_fs_ui: GPUI window created");
+        // Check the result instead of discarding it: a failed window must be
+        // reported on stderr with the same binary-name prefix as success.
+        match cx.open_window(Default::default(), |_window, _cx| panel.clone()) {
+            Ok(_window) => eprintln!("cordis_fs_ui: {}", window_log_line(true, "")),
+            Err(error) => eprintln!(
+                "cordis_fs_ui: {}",
+                window_log_line(false, &error.to_string())
+            ),
+        }
     });
     Ok(())
 }
@@ -218,6 +236,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_log_line_reports_success_without_detail() {
+        assert_eq!(window_log_line(true, ""), "GPUI window created");
+        assert_eq!(
+            window_log_line(true, "unused detail"),
+            "GPUI window created"
+        );
+    }
+
+    #[test]
+    fn window_log_line_reports_failure_with_detail() {
+        assert_eq!(
+            window_log_line(false, "no display"),
+            "failed to create window: no display"
+        );
+    }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("cordis-fs-ui-{}-{tag}", std::process::id()));

@@ -799,6 +799,17 @@ fn spawn_acp(
     })
 }
 
+/// Single source for the window-creation log line. The checked `open_window`
+/// result feeds this helper, so success and failure wording stays identical
+/// across the GPUI demo binaries.
+fn window_log_line(opened: bool, detail: &str) -> String {
+    if opened {
+        "GPUI window created".to_string()
+    } else {
+        format!("failed to create window: {detail}")
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let env_prompt = std::env::var(PROMPT_ENV).ok();
@@ -850,8 +861,15 @@ fn main() {
         })
         .detach();
 
-        let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
-        eprintln!("acp_stream_ui: GPUI window created");
+        // Check the result instead of discarding it: a failed window must be
+        // reported on stderr with the same binary-name prefix as success.
+        match cx.open_window(Default::default(), |_window, _cx| panel.clone()) {
+            Ok(_window) => eprintln!("acp_stream_ui: {}", window_log_line(true, "")),
+            Err(error) => eprintln!(
+                "acp_stream_ui: {}",
+                window_log_line(false, &error.to_string())
+            ),
+        }
     });
 
     // `complete()` is idempotent: normally the window-close hook already
@@ -874,6 +892,23 @@ impl StreamPanel {
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn window_log_line_reports_success_without_detail() {
+        assert_eq!(window_log_line(true, ""), "GPUI window created");
+        assert_eq!(
+            window_log_line(true, "unused detail"),
+            "GPUI window created"
+        );
+    }
+
+    #[test]
+    fn window_log_line_reports_failure_with_detail() {
+        assert_eq!(
+            window_log_line(false, "no display"),
+            "failed to create window: no display"
+        );
+    }
 
     #[test]
     fn startup_error_prefixes_are_stable() {
