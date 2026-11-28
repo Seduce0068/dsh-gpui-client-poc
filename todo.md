@@ -103,8 +103,8 @@ verified:
    進捗 2026-11-28: S1（dsh 起動ヘルパー6つ）を `src/acp_launch.rs` へ抽出し6バイナリの
    重複441行を削除。`cargo fmt --all -- --check` / `cargo check --bins` /
    `cargo clippy --bins --all-targets -- -D warnings` / `cargo test --bins`
-   （249 passed, 0 failed）すべて exit 0、R4 指摘なし。S2=redaction/drain、
-   S3=reap_child、S4=patch、S5=emit/correlation/shutdown、S6=prompt は残課題。
+   （249 passed, 0 failed）すべて exit 0、R4 指摘なし。
+   S2=redaction / DshCorrelation / spawn_stderr_capture も共有へ抽出（flush は各 bin の emit / eprintln 契約を維持しローカル残置）。再び fmt / check / clippy / cargo test --bins（249 passed, 0 failed）すべて exit 0、R4 指摘なし、Betterleaks git/dir hit zero。S3=reap_child、S4=patch、S5=emit/correlation/shutdown、S6=prompt は残課題。
 
 ### 優先度: 中（swarm-unlimited 2026-11-28 review+discovery で追加）
 
