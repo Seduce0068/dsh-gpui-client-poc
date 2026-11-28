@@ -27,7 +27,6 @@
 //!   その全行が stderr へ出ることを回帰テストで固定する。
 
 use std::cell::RefCell;
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -98,37 +97,6 @@ fn take_capture() -> Vec<(ProbeStream, String)> {
 // fake `dsh` and capture the ACP stdio traffic. Resolve an absolute path from
 // an explicit override or a fixed allowlist, then give the child a minimal,
 // attacker-independent `PATH`.
-
-/// CLI args for the spawned `dsh`; an optional `--patch` overlay routes the
-/// stage-B probe through the NVIDIA free model without editing global config.
-/// Validate the optional patch overlay path. An empty value means "unset";
-/// a non-empty value must name an existing file, otherwise the typo would
-/// silently produce a probe result without the patch (swarm review round 283).
-fn resolve_patch_path(
-    raw: Option<std::ffi::OsString>,
-) -> std::result::Result<Option<std::ffi::OsString>, String> {
-    match raw {
-        None => Ok(None),
-        Some(value) if value.is_empty() => Ok(None),
-        Some(value) => {
-            let path = std::path::Path::new(&value);
-            if !path.is_file() {
-                Err(format!("DSH_ACP_PATCH is not a file: {value:?}"))
-            } else {
-                Ok(Some(value))
-            }
-        }
-    }
-}
-
-fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
-    let mut args = vec![OsString::from("--profile"), OsString::from("acp")];
-    if let Some(patch) = patch {
-        args.push(OsString::from("--patch"));
-        args.push(patch.to_os_string());
-    }
-    args
-}
 
 impl DshCorrelation {
     fn flush(&self) {
@@ -351,13 +319,6 @@ async fn acp_prompt_over(
     transport: impl ConnectTo<Client> + 'static,
 ) -> std::result::Result<String, String> {
     acp_prompt_over_with_correlation(prompt, transport, DshCorrelation::offline()).await
-}
-
-/// Kill then wait: `wait()` reaps the child so no zombie is left behind.
-/// Mirrors `shutdown_child` in `acp_probe` / `acp_multi_turn_probe`.
-async fn reap_child(child: &mut tokio::process::Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await; // reap so no zombie is left behind
 }
 
 /// Ask the ACP agent one prompt in a fresh session and return its message body.

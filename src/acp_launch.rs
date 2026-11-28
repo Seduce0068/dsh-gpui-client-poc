@@ -258,3 +258,46 @@ where
         }
     })
 }
+
+// ---- Patch overlay and child teardown ------------------------------------
+
+/// Validate the optional patch overlay path. An empty value means "unset";
+/// a non-empty value must name an existing file, otherwise the typo would
+/// silently produce a probe result without the patch (swarm review round 283).
+#[allow(dead_code)] // only llm/prompt probes use the patch overlay
+pub(crate) fn resolve_patch_path(
+    raw: Option<OsString>,
+) -> std::result::Result<Option<OsString>, String> {
+    match raw {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => {
+            let path = std::path::Path::new(&value);
+            if !path.is_file() {
+                Err(format!("DSH_ACP_PATCH is not a file: {value:?}"))
+            } else {
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
+/// CLI args for the spawned `dsh`; an optional `--patch` overlay routes the
+/// stage-B probe through the NVIDIA free model without editing global config.
+#[allow(dead_code)] // only llm/prompt probes pass --patch
+pub(crate) fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
+    let mut args = vec![OsString::from("--profile"), OsString::from("acp")];
+    if let Some(patch) = patch {
+        args.push(OsString::from("--patch"));
+        args.push(patch.to_os_string());
+    }
+    args
+}
+
+/// Kill then wait: `wait()` reaps the child so no zombie is left behind.
+/// Mirrors `shutdown_child` in `acp_probe` / `acp_multi_turn_probe`.
+#[allow(dead_code)] // stream_ui owns a different teardown path
+pub(crate) async fn reap_child(child: &mut tokio::process::Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await; // reap so no zombie is left behind
+}

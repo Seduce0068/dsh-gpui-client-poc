@@ -104,7 +104,7 @@ verified:
    重複441行を削除。`cargo fmt --all -- --check` / `cargo check --bins` /
    `cargo clippy --bins --all-targets -- -D warnings` / `cargo test --bins`
    （249 passed, 0 failed）すべて exit 0、R4 指摘なし。
-   S2=redaction / DshCorrelation / spawn_stderr_capture も共有へ抽出（flush は各 bin の emit / eprintln 契約を維持しローカル残置）。再び fmt / check / clippy / cargo test --bins（249 passed, 0 failed）すべて exit 0、R4 指摘なし、Betterleaks git/dir hit zero。S3=reap_child、S4=patch、S5=emit/correlation/shutdown、S6=prompt は残課題。
+   S2=redaction / DshCorrelation / spawn_stderr_capture も共有へ抽出（flush は各 bin の emit / eprintln 契約を維持しローカル残置）。再び fmt / check / clippy / cargo test --bins（249 passed, 0 failed）すべて exit 0、R4 指摘なし、Betterleaks git/dir hit zero。S3=reap_child と S4=patch 群（resolve_patch_path / dsh_cli_args）も共有化済み（共有モジュールは6 bin 全てに include されるため、未使用バイナリ向けに項目単位の `#[allow(dead_code)]` を付与）。S5=emit/correlation/shutdown、S6=prompt は残課題。
 
 ### 優先度: 中（swarm-unlimited 2026-11-28 review+discovery で追加）
 

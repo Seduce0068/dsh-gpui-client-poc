@@ -10,7 +10,6 @@ use agent_client_protocol::schema::{
     TextContent,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
-use std::ffi::OsString;
 use std::path::PathBuf;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -25,38 +24,6 @@ use acp_launch::*;
 // fake `dsh` and capture the ACP stdio traffic. Resolve an absolute path from
 // an explicit override or a fixed allowlist, then give the child a minimal,
 // attacker-independent `PATH`.
-
-/// CLI arguments for the spawned `dsh`. An optional `--patch` overlay keeps
-/// stage-B provider experiments out of the user's global profile.
-fn dsh_cli_args(patch: Option<&std::ffi::OsStr>) -> Vec<OsString> {
-    let mut args = vec![OsString::from("--profile"), OsString::from("acp")];
-    if let Some(patch) = patch {
-        args.push(OsString::from("--patch"));
-        args.push(patch.to_os_string());
-    }
-    args
-}
-
-/// Validate the optional patch overlay path. An empty value means "unset";
-/// a non-empty value must name an existing file, otherwise a typo would
-/// silently produce a probe result without the patch. Same contract as
-/// `acp_llm_probe::resolve_patch_path`.
-fn resolve_patch_path(
-    raw: Option<std::ffi::OsString>,
-) -> std::result::Result<Option<std::ffi::OsString>, String> {
-    match raw {
-        None => Ok(None),
-        Some(value) if value.is_empty() => Ok(None),
-        Some(value) => {
-            let path = std::path::Path::new(&value);
-            if !path.is_file() {
-                Err(format!("DSH_ACP_PATCH is not a file: {value:?}"))
-            } else {
-                Ok(Some(value))
-            }
-        }
-    }
-}
 
 /// Prompt input contract mirrored from `acp_stream_ui::resolve_prompt`:
 /// join every CLI argument with one space, reject blank / control / overlong
@@ -157,13 +124,6 @@ async fn prompt_over(
     transport: impl ConnectTo<Client> + 'static,
 ) -> Result<StopReason, String> {
     prompt_over_with_correlation(cwd, prompt, transport, DshCorrelation::offline()).await
-}
-
-/// Kill then wait: `wait()` reaps the child so no zombie is left behind.
-/// Mirrors `shutdown_child` in `acp_probe` / `acp_multi_turn_probe`.
-async fn reap_child(child: &mut tokio::process::Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await; // reap so no zombie is left behind
 }
 
 #[tokio::main]

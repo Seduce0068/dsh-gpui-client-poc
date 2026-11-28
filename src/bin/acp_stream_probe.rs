@@ -162,13 +162,6 @@ async fn stream_prompt_over(
     stream_prompt_over_with_correlation(cwd, prompt, transport, DshCorrelation::offline()).await
 }
 
-/// Kill then wait: `wait()` reaps the child so no zombie is left behind.
-/// Mirrors `shutdown_child` in `acp_probe` / `acp_multi_turn_probe`.
-async fn reap_child(child: &mut tokio::process::Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await; // reap so no zombie is left behind
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
