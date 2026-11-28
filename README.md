@@ -108,7 +108,7 @@ DSH の `read_image` ツールで開き、エージェント自身が実描画�
 
 ```bash
 echo '=== ビルド ==='
-cd /home/koppe/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc
+cd <workspace>
 cargo build --bins
 
 echo '=== 証跡取得（各デモの全画面 PNG を EVIDENCE_DIR へ） ==='
@@ -146,7 +146,7 @@ echo '=== 証跡の確認（エージェントが read_image を呼ぶ） ==='
 
 #### 全画面 PNG のクロップ / マスキング方針
 
-`spectacle -b -n -o` は全画面（Kubuntu 環境では 5120x1440）を撮るため、
+`spectacle -b -n -o` は全画面（環境依存）を撮るため、
 対象ウィンドウ以外（ブラウザ、チャット、ファイル名など）が写り込む。
 証跡を共有・添付する際は次の方針を守る。
 
@@ -216,9 +216,11 @@ cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `
 
 ## ライセンス
 
-`AGPL-3.0-or-later`（[LICENSE](LICENSE) を参照）。上流 gpui は Apache-2.0 ですが、
-本 PoC のコードは `AGPL-3.0-or-later` で公開します。以前の MIT 本文は
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に保持しています。
+`AGPL-3.0-or-later`（[LICENSE](LICENSE) を参照）。上流 gpui と
+`agent-client-protocol` は Apache-2.0 ですが、本 PoC のコードは
+`AGPL-3.0-or-later` で公開します。以前の MIT 本文と Apache-2.0 依存の
+著作権表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に、
+Apache-2.0 本文は [LICENSE-APACHE.txt](LICENSE-APACHE.txt) に保持しています。
 
 ## 方針
 

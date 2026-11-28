@@ -36,7 +36,7 @@ status: completed
 
 - 認証情報: **有**（API キーと Platform アカウント grant が保存済み）
 - API キーの有効性: **有**（`/models` が HTTP 200 で 2 モデルを返却）
-- 残高: **ゼロ**（`is_available=false` / `total_balance=0.00 USD`）
+- 残高: **ゼロ**（`is_available=false` / `total_balance=<balance>`）
 - 推論リクエスト: **HTTP 402 Insufficient Balance**（既存記録）
 - `acp_probe` ハンドシェイク: **成功**（exit 0、clean shutdown、課金送信なし）
 
@@ -49,18 +49,18 @@ status: completed
 
 | 保管先 | 項目 | 状態 |
 | --- | --- | --- |
-| `.env` | `DEEPSEEK_API_KEY` | SET（長さ 35、値は非表示） |
-| `.env` | `AGENTROUTER_API_KEY` | SET（長さ 51、値は非表示） |
+| `.env` | `<PROVIDER_API_KEY_ENV>` | SET（長さ 35、値は非表示） |
+| `.env` | `<ROUTER_API_KEY_ENV>` | SET（長さ 51、値は非表示） |
 | `.credentials.yaml` | `kind: grant` レコード | 1件（Platform アカウント grant） |
 | `.credentials.yaml` | `refs` | 3件（下記） |
 
-`refs` の内容は `GOOGLE_API_KEY`、`LOGFARE_API_KEY`、`AMD_API_KEY` である。
+`refs` の内容は `<PROVIDER_KEY_ENV_1>`、`<PROVIDER_KEY_ENV_2>`、`<PROVIDER_KEY_ENV_3>` である。
 
 `acp_probe` が起動する `dsh --profile acp` は
 `@deepseek-ai/dsh-base` と `@deepseek-ai/dsh-acp-app` のみを束ね、
 `cordis.patch.yml` は空配列である。起動ログに
 `[llm-deepseek-api-key] model listing from
-https://api.deepseek.com/models loaded 2 model(s)` が出たことから、
+<PROVIDER_MODELS_URL> loaded 2 model(s)` が出たことから、
 API キーが解決され DeepSeek 側で受け付けられていることも確認できた。
 `/models` は認証を伴う読み取り専用エンドポイントであり、推論課金は発生しない。
 
@@ -72,7 +72,7 @@ API キーが解決され DeepSeek 側で受け付けられていることも確
 
 | 手段 | 種別 | 備考 |
 | --- | --- | --- |
-| `GET /user/balance` | 読み取り専用 REST | API キー必須・推論ではないため課金なし |
+| `<PROVIDER_BALANCE_ENDPOINT>` | 読み取り専用 REST | API キー必須・推論ではないため課金なし |
 | DSH Web UI のアカウントパネル | Remote API | `getBalance` が recharge / bonus を返す |
 | DeepSeek Platform の残高画面 | ブラウザ UI | ユーザーが目視で確認する |
 
@@ -82,7 +82,7 @@ API キーが解決され DeepSeek 側で受け付けられていることも確
 ```text
 HTTP_CODE = 200
 is_available = False
-currency = USD  total = 0.00  granted = 0.00  purchased = None
+currency = <currency>  total = <balance>  granted = <granted>  purchased = <value>
 ```
 
 API キーは有効なのに利用可能残高がゼロである。これは「認証失敗」ではなく
@@ -102,9 +102,9 @@ INIT OK: agent_info=Some(Implementation { name: "deepseek-harness-acp", title: N
 SESSION OK: id=SessionId("f8a1f1c6-283f-427b-8e96-e2fcdc74249c")
 
 --- STDERR ---
-cwd = /home/koppe/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc
+cwd = <workspace>
 dsh: warning: 5 entries did not activate
-[llm-deepseek-api-key] model listing from https://api.deepseek.com/models loaded 2 model(s), skipped 0 row(s)
+[llm-deepseek-api-key] model listing from <PROVIDER_MODELS_URL> loaded 2 model(s), skipped 0 row(s)
 SHUTDOWN = Exited
 ```
 <!-- markdownlint-enable MD013 -->
@@ -126,9 +126,9 @@ ACP ハンドシェイクの成否とは無関係である。
    ネットワーク経路も到達している。
 2. しかし DeepSeek API の推論リクエストは
    `HTTP 402: Insufficient Balance` を返す（request_id:
-   `ee2c0794-e6b0-4d74-9d89-b5de1b27b189`）。
+   `<request-id>`）。
 3. 読み取り専用の残高 API が `is_available=false` かつ
-   `total_balance=0.00 USD` を返し、残高枯渇を裏付けた。
+   `total_balance=<balance>` を返し、残高枯渇を裏付けた。
 4. よって `acp_prompt_probe` が `session/prompt` を送っても
    非空の回答本文と妥当な stop reason を取得できない。
 5. 結果として `tests-stage-b-online`（G5）の受入条件を満たせない。
@@ -141,23 +141,23 @@ ACP ハンドシェイクの成否とは無関係である。
 
 stage B を実行可能にするには、エージェントでは行えない課金・認証の操作が必要である。
 
-1. DeepSeek Platform（<https://platform.deepseek.com/>）にログインし、
-   `DEEPSEEK_API_KEY` に紐づくアカウントへ残高をチャージする。
+1. DeepSeek Platform（<PROVIDER_CONSOLE_URL>）にログインし、
+   `<PROVIDER_API_KEY_ENV>` に紐づくアカウントへ残高をチャージする。
    プロモーション残高が付与された場合は `granted_balance` が正の値になる。
 2. チャージ後、読み取り専用エンドポイントで `is_available=true` かつ
    `total_balance>0` になったことを確認する。以下は Kubuntu の bash で、
    キー値を画面に出さずに確認する手順である。
 
-   ```bash
-   echo "残高確認（Kubuntu / ローカル）"
-   env_file="$HOME/.dsh-agentrouter/.env"
-   header_file="$(mktemp)"
-   umask 077
-   key_line="$(grep '^DEEPSEEK_API_KEY=' "$env_file" | head -1)"
-   key="$(printf '%s' "$key_line" | cut -d= -f2- | tr -d "\"'")"
-   printf 'Authorization: Bearer %s\n' "$key" > "$header_file"
-   curl -sS --max-time 25 -H @"$header_file" https://api.deepseek.com/user/balance
-   rm -f "$header_file"
+   ```text
+   プロバイダが公式に提供する残高確認手順に従う。
+   認証情報の値を画面・ログへ出力しない。
+   読み取り専用の確認操作のみを行う。
+   エンドポイント・認証ヘッダ・キー名は設定ドキュメントを参照。
+   具体的な手順はプロバイダの公式ドキュメントに従う。
+   （認証情報の実値は記載しない）
+   認証ヘッダの生成はプロバイダ設定ドキュメントを参照。
+   残高照会はプロバイダが提供する読み取り専用エンドポイントのみを使用する。
+   （一時ファイルの作成・削除手順は記載しない）
    ```
 
 3. 残高回復を確認した後に限り、`tests-stage-b-online` を実行する。
@@ -185,16 +185,16 @@ API キー経由である点に注意する。
   - `~/.dsh-agentrouter/.env`、`~/.dsh-agentrouter/.credentials.yaml`
   - `~/.dsh-agentrouter/profiles/acp/package.json`
   - DSH インストール版 `docs/subsystems/credentials.md`
-  - CLI: `/home/koppe/.npm-global/bin/dsh`（`0.2.2-rc.3`）
+  - CLI: `${HOME}/.npm-global/bin/dsh`（`0.2.2-rc.3`）
 - 既存記録
   - `README.md:139-151`（ACP 接続成功・本文のみ取得不可）
   - `investigation/external-research-retry.md:27-30`（HTTP 402 と request_id）
   - `investigation/round-2.md:174`（web_search の 402）
   - `cross-review/cycle-001/round-4.md:15`（残高不足と代替手段）
 - 外部エンドポイント
-  - <https://api.deepseek.com/user/balance>（読み取り専用、HTTP 200）
-  - <https://api.deepseek.com/models>（読み取り専用、2 モデル）
-  - <https://platform.deepseek.com/>（チャージ操作はユーザーが実施）
+  - <PROVIDER_BALANCE_URL>（読み取り専用、HTTP 200）
+  - <PROVIDER_MODELS_URL>（読み取り専用、2 モデル）
+  - <PROVIDER_CONSOLE_URL>（チャージ操作はユーザーが実施）
 
 ## 補足
 

@@ -82,7 +82,7 @@ README:109-113 はストリーミング未実装とするが commit 57dbc01/2a60
 `gdbus call ... org.kde.KWin.queryWindowInfo` → `GDBus.Error:org.kde.KWin.Error.UserCancel: User cancelled the query`。メソッドは存在するがユーザーがウィンドウをクリック選択する方式で**無人化不可**。`getWindowInfo` も window id 別途必要。
 
 ### D-9 `rv-spectacle-screenshot-works` [改善/high/no] ★Runtime Proof
-`spectacle -b -n -o /tmp/r2-verify-$$.png` → rc=0、`PNG image data, 5120 x 1440, 8-bit/color RGBA`、4,675,784 bytes（2560x1440 @180Hz ×2 と整合）。裏側は `org.kde.KWin.ScreenShot2` の `CaptureActiveScreen/CaptureWindow/CaptureArea`。**Wayland ネイティブ画面の非対話スクリーンショット証跡が今日から可能**。撮影後ファイルは削除済み。
+`spectacle -b -n -o /tmp/r2-verify-$$.png` → rc=0、全画面（環境依存）の PNG（8-bit/color RGBA、寸法・サイズは環境依存、複数モニタ構成と整合）。裏側は `org.kde.KWin.ScreenShot2` の `CaptureActiveScreen/CaptureWindow/CaptureArea`。**Wayland ネイティブ画面の非対話スクリーンショット証跡が今日から可能**。撮影後ファイルは削除済み。
 
 ### D-10 `rv-portal-input-injection` [調査必要/medium/no]
 `gdbus introspect ... /org/freedesktop/portal/desktop` に `NotifyPointerMotion`, `NotifyPointerButton`, `NotifyKeyboardKeysym`, `NotifyTouchDown/Motion/Up`, `CreateSession`, `SelectDevices`, `Start`, `Screenshot` が存在。実注入は未試行。初回にユーザー承認ダイアログを伴う可能性（推測・要検証）。ボタン押下自動化の唯一のローカル経路候補。
@@ -244,7 +244,7 @@ TUI 実装で再利用要素を検出できず。
 
 ## A. `r2-dsh-upstream`（上流 DSH が実際に送る/受け取るもの、14項目）
 
-`dsh-doc` スキルを読み込み、npm インストール `/home/koppe/.npm-global/lib/node_modules/@deepseek-ai/dsh`（v0.2.2-rc.3）の同梱 `src/*.ts`、README、ACP プロファイル設定、CLI ヘルプ、公式 GitHub README を一次情報とした。**静的ソースに基づき、実 JSON-RPC トレースは未実施**。
+`dsh-doc` スキルを読み込み、npm インストール `${HOME}/.npm-global/lib/node_modules/@deepseek-ai/dsh`（v0.2.2-rc.3）の同梱 `src/*.ts`、README、ACP プロファイル設定、CLI ヘルプ、公式 GitHub README を一次情報とした。**静的ソースに基づき、実 JSON-RPC トレースは未実施**。
 
 ### A-01 `dsh-emits-six-update-variants` [改善/high/yes]
 `dsh-acp/src/updates.ts:26,36,54,80,98`, `session.ts:197`, `index.ts:124-126`。実送信は `agent_thought_chunk` / `agent_message_chunk` / `tool_call` / `tool_call_update` / `usage_update`（usage・contextWindow・tokenMeter 揃う時のみ）/ `config_option_update`（`llm/adapters-updated` 時）の6種のみ。PoC が実装すべき範囲が確定。
@@ -286,7 +286,7 @@ README:76,82,177。メソッド自体は登録なし。README は「list/resume 
 公式 README <https://github.com/deepseek-ai/deepseek-harness/blob/master/README.md>（developer preview / breaking changes のみ、roadmap 節なし）、同梱 docs 全ファイル grep で `roadmap|multimodal|GPUI` 該当なし（"not a roadmap" という否定的文言のみ）。**確認した一次情報の範囲では公式ロードマップ記述なし。不存在の証明ではない**。非公開レポート §5 を「公式一次情報では未確認」と結論付ける根拠。
 
 ### A-14 `acp-profile-is-automation-only` [調査必要/high/no]
-`/home/koppe/.dsh-agentrouter/profiles/acp/package.json`（bundles: `dsh-base` + `dsh-acp-app`）、`dsh-acp-app/cordis.patch.yml`（`acp` を `inject: [acpAppStartup]`）、`dsh --profile acp --help`、`dsh-acp-app/src/index.ts:1-48`。PoC が接続するのは「プレゼンテーション/対話機能を意図的に省いた標準 ACP v1 サーバ」。PoC の期待値をこの制約に合わせる判断材料。
+`${HOME}/.dsh-agentrouter/profiles/acp/package.json`（bundles: `dsh-base` + `dsh-acp-app`）、`dsh-acp-app/cordis.patch.yml`（`acp` を `inject: [acpAppStartup]`）、`dsh --profile acp --help`、`dsh-acp-app/src/index.ts:1-48`。PoC が接続するのは「プレゼンテーション/対話機能を意図的に省いた標準 ACP v1 サーバ」。PoC の期待値をこの制約に合わせる判断材料。
 
 **未確認事項**: 公式 docs サイトへの fetch 失敗（`TypeError: fetch failed`）でサイト内の roadmap 有無は未確認。web_search は HTTP 402 残高不足で失敗。`approval/request` を実発火するツール（推測: sandbox 系）は未追跡。実 JSON-RPC キャプチャは未実施（読み取り専用順守）。
 

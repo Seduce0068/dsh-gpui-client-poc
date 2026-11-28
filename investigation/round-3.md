@@ -72,7 +72,7 @@ commit 2a60bc7（tokio sleep → gpui timer 切替）, a8f9174 + README:73。kdo
 6箇所の `Command::new("dsh")` → initialize/session/new を `acp_client::spawn_session() -> Result<Session, AcpError>` に集約。エラー型も統一。`Channel::duplex()` でモック差し替え可能（round-2 C-1）。round-1 A-5 と同一。
 
 ### D-9 `build-registry-shared-mod` [改善/high/high/no]
-14回の PluginFactory 登録を `build_registry(ctx, home, include_tools)` へ。`sk-demo` キーも一括管理。round-1 A-3 と同一。
+14回の PluginFactory 登録を `build_registry(ctx, home, include_tools)` へ。`<placeholder-key>` キーも一括管理。round-1 A-3 と同一。
 
 ### D-10 `text-input-shared-mod` [改善/high/high/no]
 `draft/push_char/backspace/observe_keystrokes` と echo_provider が2箇所逐語複製。`text_input::TextInput` + `test_support::echo_provider()` へ。round-1 A-4 と同一。
@@ -174,7 +174,7 @@ fmt / check / clippy / test --all-targets の4つはすべて EXIT=0、8 tests p
 ## A. `r3-security`（実コード敵対的セキュリティ監査、9項目）
 
 ### A-1 `child-inherits-full-parent-env` [改善/high/high/no] ★
-`acp_probe.rs:14-18` ほか6箇所、`env_clear()` なし。`Command::new("dsh")` が親環境をそのまま継承。実 `DEEPSEEK_API_KEY` / クラウドトークン / プロキシ認証が `dsh --profile acp` と配下の `dsh-tool-subagent`（provider: spawn）や feedback-producer へ全て渡る。**round-1 の「sk-demo はダミーで漏洩なし」判断は PoC 側の渡し方のみで、親環境継承は未検証だった**。PATH 汚染と組み合わせると攻撃者の `dsh` が全シークレットを取得。`.env_clear()` + 最小限 `.env()` を推奨。
+`acp_probe.rs:14-18` ほか6箇所、`env_clear()` なし。`Command::new("dsh")` が親環境をそのまま継承。実 `<PROVIDER_API_KEY_ENV>` / クラウドトークン / プロキシ認証が `dsh --profile acp` と配下の `dsh-tool-subagent`（provider: spawn）や feedback-producer へ全て渡る。**round-1 の「<placeholder-key> はダミーで漏洩なし」判断は PoC 側の渡し方のみで、親環境継承は未検証だった**。PATH 汚染と組み合わせると信頼できない実行ファイルへ秘密が渡るリスクがある。`.env_clear()` + 最小限 `.env()` を推奨。具体的な悪用手順は記載しない。
 
 ### A-2 `orphan-dsh-on-early-return-or-panic` [改善/high/high/no]
 6箇所すべてで `kill_on_drop` 未指定、`child.kill()` は成功パス末尾のみ。`ok_or("no stdin")?` / `spawn()?` / `connect_with(...).await?` の早期リターンや `assert_eq!` panic、`expect("stream buffer poisoned")` で子が孤立。孤立 dsh は継承した認証情報と pipe を持ち続ける。`.kill_on_drop(true)` + RAII ガードを推奨。
@@ -186,13 +186,13 @@ fmt / check / clippy / test --all-targets の4つはすべて EXIT=0、8 tests p
 `agent-client-protocol-0.11.1/src/jsonrpc.rs:3313`（`BufReader::new(incoming).lines()` に上限なし）、`transport_actor.rs:96-114`（parse 失敗時に `"line": &line` をエラーへ埋め込み + `tracing::trace!(message = %line)`）。巨大1行で OOM、不正 JSON 行がログへ全文（秘密混入時に二次漏洩）。PoC は `ByteStreams` を直接使い parse error を inspection していない。
 
 ### A-5 `sync-answerer-cannot-do-interactive-approval` [残タスク/high→medium/no] ★根本原因
-cordis-rs `approval.rs:14-16,49`（`Answerer = Fn(&ApprovalRequest) -> Option<ApprovalDecision>` で同期）、`tools.rs:309-315`（async パイプライン内で同期呼び出し）、`cordis_permission_ui.rs:33-38,48-49`（current-thread runtime + block_on + 常 Allow）。**「承認ダイアログを出してクリックを待つ」は UI スレッドと runtime をデッドロックさせるため構造的に不可能**。これが「常 Allow スタブ」の根本原因。`ApprovalRequest` に args が無く「この `curl ... | sh` を許可しますか？」と表示すること自体できない。Answerer を async/チャネル駆動＋args 追加が必要。
+cordis-rs `approval.rs:14-16,49`（`Answerer = Fn(&ApprovalRequest) -> Option<ApprovalDecision>` で同期）、`tools.rs:309-315`（async パイプライン内で同期呼び出し）、`cordis_permission_ui.rs:33-38,48-49`（current-thread runtime + block_on + 常 Allow）。**「承認ダイアログを出してクリックを待つ」は UI スレッドと runtime をデッドロックさせるため構造的に不可能**。これが「常 Allow スタブ」の根本原因。`ApprovalRequest` に args が無く「この `<untrusted-command>` を許可しますか？」と表示すること自体できない。Answerer を async/チャネル駆動＋args 追加が必要。
 
 ### A-6 `bash-rce-chain-from-untrusted-content` [残タスク/high(潜在)/high/no] ★潜在 critical
-`cordis_agent_ui.rs:110,116-121,125-127`（`let (tools, _)` で pipeline を破棄し `with_approval` せず tool-bash mount）、`tool_bash.rs:47-64`（command/workdir はモデル引数）、`shell.rs:131-135`（`sh -c <command>`）。シナリオ: 未信頼コンテンツ（ACP chunk または fs_ui で読ませたファイル）の prompt injection → 実 LLM＋call parser への差し替え時に agent_ui が approval pipeline を捨てているため gate を通らない → `ToolBashConfig::default()`（background/timeout promote = true）のまま `sh -c` → A-1 の環境秘密を読み出し stderr 未捕捉で外部送信。**現状は scripted provider のため発火しない（抑制要因を維持）**。
+`cordis_agent_ui.rs:110,116-121,125-127`（`let (tools, _)` で pipeline を破棄し `with_approval` せず tool-bash mount）、`tool_bash.rs:47-64`（command/workdir はモデル引数）、`shell.rs:131-135`（`sh -c <command>`）。シナリオ: 未信頼コンテンツ（ACP chunk または fs_ui で読ませたファイル）の prompt injection → 実 LLM＋call parser への差し替え時に agent_ui が approval pipeline を捨てているため gate を通らない → `ToolBashConfig::default()`（background/timeout promote = true）のまま `sh -c` → 環境秘密の外部流失リスク。**現状は scripted provider のため発火しない（抑制要因を維持）**。具体的な再現手順は記載しない。
 
 ### A-7 `untrusted-render-content-sanitization` [残タスク/medium/high/no]
-`acp_stream_ui.rs:34-59,100-108`, `cordis_fs_ui.rs:27-52`, `cordis_agent_ui.rs:72-78`。現状は `SharedString` プレーンテキストで安全だが、Markdown/リンク/画像実装時に `[open](file:///home/koppe/.ssh/id_rsa)` や `<img src="file:///...">` の自動ロード、`http://attacker/pixel` ビーコン、`javascript:`/`data:` が成立。tool 出力の ANSI エスケープや双方向制御文字（RLO）で "ALLOWED/DENIED" 表示を spoof 可能。スキーム allowlist（https のみ）・自動ロード禁止・制御文字除去を推奨。
+`acp_stream_ui.rs:34-59,100-108`, `cordis_fs_ui.rs:27-52`, `cordis_agent_ui.rs:72-78`。現状は `SharedString` プレーンテキストで安全だが、Markdown/リンク/画像実装時に `<private-file-uri>` や `<local-file-uri>` の自動ロード、`<tracking-url>` ビーコン、`<unsafe-scheme>` が成立。tool 出力の ANSI エスケープや双方向制御文字（RLO）で "ALLOWED/DENIED" 表示を spoof 可能。スキーム allowlist（https のみ）・自動ロード禁止・制御文字除去を推奨。
 
 ### A-8 `session-cwd-not-applied-to-child` [調査必要/low/high/no]
 全 `acp_*` の `current_dir().unwrap_or_else(|_| PathBuf::from("/"))` が `NewSessionRequest` に渡るのみで、**子 `Command` に `.current_dir()` を呼ばない**（`grep -rn "\.current_dir" src/` = 0件）。UI が `/path/session` を宣言しても dsh 実体は親起動ディレクトリ（例: `~/.ssh`）で動き、意図しないファイルへの read/write が起こり得る。`cmd.current_dir(cwd)` 明示を推奨。

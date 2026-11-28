@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(origin, PathOrigin::Cwd);
         let path = path.to_string_lossy();
         assert!(
-            !path.contains("/home/koppe"),
+            !path.contains("/home/testuser"),
             "resolved path must not fall back to a personal absolute path: {path}"
         );
     }

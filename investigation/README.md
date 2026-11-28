@@ -25,7 +25,7 @@
 
 ## 調査対象
 
-- リポジトリ: `/home/koppe/document/deepseek-harness/default-workspace/work/dsh-gpui-client-poc`
+- リポジトリ: `<workspace>`
 - GitHub: <https://github.com/Seduce0068/dsh-gpui-client-poc>
 - 主要技術: Rust / GPUI `=0.2.2` / ACP `0.11.1` / cordis-rs `v0.426.0`
 

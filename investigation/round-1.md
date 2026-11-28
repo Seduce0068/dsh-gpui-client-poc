@@ -21,7 +21,7 @@
 `cordis_permission_ui.rs:48-57,73-76,112-117`。answerer が常に `Allow` を返すため deny 経路が到達不能なのに、表示側には "DENIED" 分岐がある。README:27 は「allow/deny を表示するデモ」と記載。`bash` tool はコマンドを実行せず固定文字列を返すだけ。
 
 ### A-3 `plugin-registry-registration-duplicated` [改善 / high / known:no]
-`cordis_composition_ui.rs:68-174` と `cordis_entries_toggle_ui.rs:152-231` で同一の `PluginFactory` 登録が延べ14回重複。差分は tool-fs / tool-bash の有無のみ。`sk-demo` ダミーキーも重複。共通 `build_registry()` 抽出候補。
+`cordis_composition_ui.rs:68-174` と `cordis_entries_toggle_ui.rs:152-231` で同一の `PluginFactory` 登録が延べ14回重複。差分は tool-fs / tool-bash の有無のみ。`<placeholder-key>` ダミーキーも重複。共通 `build_registry()` 抽出候補。
 
 ### A-4 `text-input-keyboard-logic-duplicated` [改善 / high / known:no]
 `cordis_prompt_ui.rs:38-69,144-156` と `cordis_prompt_agent_ui.rs:39-89,172-201` で `draft/push_char/backspace/observe_keystrokes` がほぼ同一。共通 `TextInput` 化で既知「テキスト入力」改善の同期コストを削減。
@@ -60,7 +60,7 @@
 `cordis_fs_ui.rs:56-59`。既定パスが開発者固有の絶対パス。別環境で即 "read failed"。可搬性の問題。
 
 ### A-16 `hardcoded-temp-paths-and-credentials` [改善 / high / known:no]
-`/tmp/cordis-gpui`, `/tmp/cordis-entries`, `/tmp/cordis-entries-toggle.json`, `/tmp/cordis-agent-ui.txt`, `DEEPSEEK_API_KEY=sk-demo` が分散。`composition_ui.rs:203` は起動直後に `remove_dir_all`。並列実行時の衝突・状態汚染。
+`/tmp/cordis-gpui`, `/tmp/cordis-entries`, `/tmp/cordis-entries-toggle.json`, `/tmp/cordis-agent-ui.txt`, `<PROVIDER_API_KEY_ENV>=<placeholder-key>` が分散。`composition_ui.rs:203` は起動直後に `remove_dir_all`。並列実行時の衝突・状態汚染。
 
 ### A-17 `permission-ui-recreates-runtime-per-click` [改善 / high / known:no]
 `cordis_permission_ui.rs:33-38,129-133`。クリック毎に Tokio runtime を生成し `block_on`。他デモは起動時1回のみでパターン不統一。
@@ -285,7 +285,7 @@ Web 検索不要と判断し未実施。
 `cordis_bridge.rs:34-36,44-57,87-91`。空 struct Compaction を inject し `/compact` を登録するだけ。実 port は `['commands','compaction','sessions']` を inject し SessionStore を要求。README:17 の「command-compact をマウント」は誤導。
 
 ### F-3 `scripted-llm-no-real-connection` [残タスク/high/no]
-全 cordis デモが scripted/echo/stub provider。HTTP でモデルを呼ばない。実接続は `acp_llm_probe` のみで残高不足で本文未検証（README:89-94）。composition の DeepSeek provider は `sk-demo` で mount のみ、リクエスト内容も無視。**PoC の本命が未配線**。
+全 cordis デモが scripted/echo/stub provider。HTTP でモデルを呼ばない。実接続は `acp_llm_probe` のみで残高不足で本文未検証（README:89-94）。composition の DeepSeek provider は `<placeholder-key>` で mount のみ、リクエスト内容も無視。**PoC の本命が未配線**。
 
 ### F-4 `no-streaming-chunks-or-toolcall-stream` [残タスク/high/no]
 cordis-rs の `StreamChunk` は Text/Error/Done のみ。`stream::once` で Text 1個、GUI は AgentRun 完了後にまとめて描画。function-call delta を表す型自体が無い（事実）。ACP 側ストリーミングとは別レイヤ。

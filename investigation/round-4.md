@@ -85,7 +85,7 @@ cross-review にしか無い項目を逆輸入候補として特定:
 
 ### D-3 `cross-review-stronger-points` [DSH 側が劣っていた点]
 - cross-review は `agent-ui-pipeline-without-approval` を「high（潜在）」とし、`tool-call-parser-absent` を抑制要因として明示 → round-3 A-6 より一歩進んでいた。
-- `sk-demo` の実キー漏洩は却下（`resolve_api_key` は渡された map のみ参照）→ 妥当。
+- `<placeholder-key>` の実キー漏洩は却下（`resolve_api_key` は渡された map のみ参照）→ 妥当。
 - CI ゲートの `audit: true` / `undocumented_unsafe_blocks` 不在は確認済みギャップへ格上げ → DSH 側「未確認」を上回る。
 
 ### D-4 `todo-integration-policy` [統合方針]

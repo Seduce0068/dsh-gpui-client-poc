@@ -324,7 +324,8 @@ generated: 2026-11-17T20:05:00+09:00
 
 - 照合で不整合なし: バイナリ表は19行で実体19バイナリと1:1一致。
   LICENSE（MIT / 2026 Seduce0068）、`Cargo.toml:6` の MIT、
-  gpui の Apache-2.0、日付表記も整合。
+  gpui の Apache-2.0、日付表記も整合。なお MIT は変更前の履歴記録であり、
+  現行ライセンス AGPL-3.0-or-later と矛盾しない。
 
 ### `docs-cordis-version-stale`
 

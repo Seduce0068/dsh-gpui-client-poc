@@ -204,8 +204,8 @@ generated: 2026-11-17T20:25:00+09:00
 - `rust_toolchain` の既定は `stable`。`rust-toolchain.toml` 不在と合わせ、
   MSRV 未固定を確認。
 - `locked: true` が既定で、`Cargo.lock` の不変性は担保されている。
-- ワークフロー先頭コメントの利用例は `onoderakeita/workflows/...` だが、
-  実際の呼び出しは `Seduce0068/workflows/...`（提供側の軽微な記述活動）。
+- ワークフロー先頭コメントの利用例は旧アカウント名（`旧アカウント/workflows/...`）だが、
+  実際の呼び出しは `Seduce0068/workflows/...`（現行アカウント、提供側の軽微な記述活動）。
 
 ## E. 却下 / 修正した仮説
 
