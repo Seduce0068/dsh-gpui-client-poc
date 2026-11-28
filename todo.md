@@ -173,10 +173,16 @@ verified:
   根拠 `README.md:132` / RV-R2-DF01 / confirmed。
   検証（2026-11-28 親）: `grep -nF 'cordis-rs × GPUI — tool-todo' README.md
   src/bin/cordis_todo_ui.rs` が一致（README:133 / ソース:116）。
-- [ ] `probe-child-reap` — kill のみで `wait()` が無く zombie が残る経路を
+- [x] `probe-child-reap` — kill のみで `wait()` が無く zombie が残る経路を
   `shutdown_child` と同じ reap 契約へ統一。根拠 `src/bin/acp_prompt_probe.rs:339`,
   `src/bin/acp_llm_probe.rs:566`, `src/bin/acp_stream_probe.rs:358` /
   DS-R3-TQ01 / confirmed。
+  検証（2026-11-28 親）: 共有 `reap_child`（kill→wait）を全 probe が使用。
+  さらに `reap_child_reaps_a_killed_child` を追加し、kill+wait 後に
+  `try_wait() == Ok(Some(_))`（zombie なし）を Runtime Proof で固定。
+  `cargo test --bins` 261 passed, 0 failed。R4 指摘（非 Unix で import が
+  未使用になる）を反映し import をテスト関数内へ移動。実 dsh 経路の手動確認は
+  従来どおり残る（認証・外部サービス依存）。
 
 ### 優先度: 高（swarm コンボ 2026-11-23 round 283 で追加）
 
