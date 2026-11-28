@@ -12,7 +12,7 @@ generated:
 status: current
 verified:
   by: "dsh-agent (lead)"
-  at: "2026-11-18T17:53:02+09:00"
+  at: "2026-11-28T15:52:00+09:00"
 ---
 
 ## 進行中
@@ -20,6 +20,140 @@ verified:
 （なし）
 
 ## 未着手
+
+### 優先度: 高（swarm-unlimited 2026-11-28 review+discovery で追加）
+
+- [x] `readme-cordis-version-line179` — `README.md:179` の cordis-rs「現行」を
+  `v0.377.0` から `v0.426.0`（`Cargo.toml:10`、`README.md:67` と一致）へ修正。
+  根拠 `README.md:67,179` / RV-R2-DF01, DS-R4-DP02 / confirmed。
+  検証（2026-11-28 親）: `grep -nE 'v0\.(377|426)\.0' README.md Cargo.toml` で
+  README:67 / :192 / Cargo.toml:10 がすべて `v0.426.0`、`v0.377.0` は消滅。
+- [x] `smoke-gui-composition-auth` — `scripts/smoke-gui.sh:22` の `cordis_composition_ui`
+  は認証必須（`src/bin/cordis_composition_ui.rs:395-405`）なのに BINS に含まれ、
+  `README.md:122-128` の「外部依存のないデモのみ」方針と矛盾。手動起動へ外すか
+  方針を実体へ修正。根拠 `README.md:122-128`, `scripts/smoke-gui.sh:22-33` /
+  RV-R2-DF01 / confirmed。
+  検証（2026-11-28 親）: `bash -n scripts/smoke-gui.sh` exit 0、`grep` で BINS から
+  削除され除外コメントのみに存在、README:124 の手動起動リストと整合。実 smoke 実行は
+  spectacle / ディスプレイ依存で未実施。
+- [x] `approval-env-nonutf8-failopen` — `AnswerMode::from_env_result` が `Err(_)` を
+  一律 Allow へ丸め、`VarError::NotUnicode` も「未設定」として fail-open。
+  `var_os` + `to_string_lossy` で不正値側へ流し Ask へ fail-closed に加え、
+  NotPresent / NotUnicode / タイポの境界テストを追加（未設定 Allow 契約は維持）。
+  根拠 `src/bin/cordis_permission_ui.rs:51-65,350-374` /
+  RV-R5-TS01, RV-R2-DI01, DS-R3-TQ02 / confirmed。
+  検証（2026-11-28 親）: `cargo test --offline --bin cordis_permission_ui` 8/8 pass。
+  R4 指摘（本番 `from_env` 変換経路がテスト未カバー）を R5 で純粋ヘルパー
+  `from_env_from_raw` へ集約し、非 UTF-8 の fail-closed を境界テストで固定。
+- [x] `entries-toggle-unload-failure` — `cordis_entries_toggle_ui` が `unload()` と
+  `to_plugin()` の Err を破棄し、失敗しても disabled を永続化する。
+  `cordis_composition_toggle_ui.rs:105-123` の差し戻しロジックを横展開し、
+  失敗注入の回帰テストを追加。根拠 `src/bin/cordis_entries_toggle_ui.rs:398,406-408,433-444` /
+  RV-R5-TS01, DS-R3-TQ02 / confirmed。
+  検証（2026-11-28 親）: `cargo test --offline --bin cordis_entries_toggle_ui` 18/18 pass。
+  R5 で `maxDepth=0` を参照実装どおり採用へ揃え、bytes=0 は既定値維持。
+- [x] `acp-redact-url-json-boundary` — `redact_secrets` が URL クエリ／JSON／引用符付き
+  の鍵をマスクできない。`split_once` 後のキー抽出を共通ヘルパー化し、
+  3 プローブ（llm / prompt / stream）へ適用＋境界テスト。
+  根拠 `src/bin/acp_llm_probe.rs:232-237,251-258`,
+  `src/bin/acp_prompt_probe.rs:140-153`, `src/bin/acp_stream_probe.rs:135-153` /
+  RV-R3-IV01, DS-R3-TQ01 / confirmed。
+  検証（2026-11-28 親）: 3 バイナリ `cargo test --offline` 全 pass（llm 22 / prompt 17 /
+  stream 17）。R5 で小文字化済み `bare` と大文字 `AKIA` の比較回帰を修正。
+  acp_probe / multi_turn / stream_ui への横展開は `acp-stderr-piped-gap` の R5 で対応中。
+- [x] `acp-stderr-piped-gap` — `acp_probe` / `acp_multi_turn_probe` / `acp_stream_ui` が
+  子プロセスの stderr を piped 捕捉せず redact / 相関 id が効かない。
+  `acp_prompt_probe.rs:327-333` と同じ構成へ統一。
+  根拠 `src/bin/acp_probe.rs:285-287`, `src/bin/acp_multi_turn_probe.rs:278-280`,
+  `src/bin/acp_stream_ui.rs:477-479` / RV-R3-DE01 / confirmed。
+  検証（2026-11-28 親）: 3 バイナリで stderr drain / correlation / redaction テスト pass。
+  R4 指摘で旧 redact のままだった点は R5 で URL/JSON/引用符対応へ横展開、
+  multi_turn は handshake 直後に session id を publish するよう修正。
+- [x] `acp-error-redaction-gap` — `format_failure` / `report_failure` が ACP・モデル由来の
+  生エラー文字列をそのまま stderr へ出し、`redact_secrets` を通らない。
+  出力前にマスキングを必須化し回帰テスト追加。
+  根拠 `src/bin/acp_llm_probe.rs:453-469,530`, `src/bin/acp_stream_probe.rs:306-308,364` /
+  RV-R4-OB01 / likely（親未裏取り分は実装時に確認）。
+  検証（2026-11-28 親）: `failure_report_masks_raw_model_error_before_output` と
+  `model_error_outcome_is_redacted_before_stdout` が pass。生エラーの redact を実装で確認、
+  複数行の書式は split_inclusive で維持。
+- [ ] `open-window-result-ignored` — 9 バイナリが `cx.open_window` の Result を破棄しつつ
+  無条件で「GPUI window created」と出力。失敗時に成功と見える診断を修正
+  （`cordis_todo_ui.rs:257`, `cordis_title_ui.rs:113` の判定例を参照）。
+  根拠 `src/bin/cordis_prompt_agent_ui.rs:302-303`,
+  `src/bin/cordis_retry_ui.rs:272-273`, `src/bin/cordis_agent_ui.rs:281-282` ほか /
+  RV-R4-OB01 / confirmed。
+- [x] `readme-stage-b-stale` — README が実 LLM 本文を「未確認」とするが、
+  `investigation/stage-b-nvidia-result.md:14-19` で NVIDIA 無料モデルによる
+  本文非空 `2` / `EndTurn` は実証済み（`todo.md:160` も完了）。ACP 節と未確認節を
+  更新し、`DSH_ACP_PATCH` + `fixtures/acp-nvidia-free.patch.yml` の再現手順を記載。
+  根拠 `README.md:161-166,194-195` / RV-R5-DC01 / confirmed。
+  検証（2026-11-28 親）: `git diff -- README.md` で旧セクションの当時事実を保持した
+  まま NVIDIA 実証と未確認項目の分離を確認、記述は investigation の `acp body: 2` /
+  `EndTurn` と一致。
+- [ ] `shared-dsh-launch-module` — dsh パス解決・redact・相関・shutdown が
+  3〜6 バイナリに逐語複製され、契約乖離（`DSH_ACP_PATCH` 検証の有無など）を生む。
+  共有モジュールへ抽出し全プローブで同一契約をテスト。
+  根拠 `src/bin/acp_llm_probe.rs:98-168,175-190`, `src/bin/acp_prompt_probe.rs:28-96,325`,
+  `src/bin/acp_stream_probe.rs:344` / RV-R1-AR01 / confirmed（大規模変更のため後段で実施）。
+
+### 優先度: 中（swarm-unlimited 2026-11-28 review+discovery で追加）
+
+- [x] `entries-toggle-negative-config` — 負値が `max(0)` で 0 へ丸められ、
+  完了済み `composition-negative-config-clamp` と片適用。`usize::try_from` +
+  正値のみ採用へ揃え境界テスト追加。根拠 `src/bin/cordis_entries_toggle_ui.rs:169,185`,
+  `src/bin/cordis_composition_ui.rs:170-177` / DS-R1-ST01, DS-R3-TQ02 / confirmed。
+  検証（2026-11-28 親）: `numeric_config_negative_zero_and_extreme_values_keep_defaults`
+  pass。bytes=0 は既定値維持、`maxDepth=0` は `cordis_composition_ui.rs:193-195` と
+  同じく採用へ R5 で整合。
+- [x] `acp-probe-prompt-join-args` — `acp_prompt_probe` / `acp_stream_probe` が
+  CLI の第1引数しか使わず複数語プロンプトを捨てる。`acp_stream_ui` の
+  `resolve_prompt`（join + 上限 + 既定）へ統一。根拠
+  `src/bin/acp_prompt_probe.rs:316-318`, `src/bin/acp_stream_probe.rs:337-339`,
+  `src/bin/acp_stream_ui.rs:408-417` / DS-R2-FG02 / confirmed。
+  検証（2026-11-28 親）: `prompt_joins_all_cli_args_with_a_space` /
+  `prompt_falls_back_to_environment_then_default` / `prompt_rejects_control_chars_...` pass。
+- [x] `acp-prompt-probe-patch-validation` — `DSH_ACP_PATCH` が存在チェックなしで
+  `--patch` へ渡り、タイポが黙って無視される。`resolve_patch_path` を共有化して
+  未設定／タイポ／実在の境界テストを追加。根拠 `src/bin/acp_prompt_probe.rs:325-326`,
+  `src/bin/acp_llm_probe.rs:175-190` / DS-R3-TQ01 / confirmed。
+  検証（2026-11-28 親）: `patch_path_validation_distinguishes_unset_from_typo` pass。
+  共有モジュール化ではなく同ファイル内ヘルパーで実装（完全共有は残タスク）。
+- [ ] `ci-audit-doc-conflict` — `ci.yml:26` の `audit: false` は README の受容判断と
+  整合するが、`todo.md:100-101` は `audit: true` 追加完了を記録している。
+  どちらが現行契約かを確定し、記録を実態へ統一（CI 設定自体の変更は方針判断）。
+  根拠 `.github/workflows/ci.yml:26`, `README.md:76-87`, `todo.md:100-101` /
+  RV-R3-DE01 / confirmed。
+- [ ] `upstream-fix-proposals-stale` — 「現行固定版でも未配線」「第2戻り値を捨てている」
+  という記述は `src/bin/cordis_agent_ui.rs:93,102-120,126` の配線済み実装と矛盾。
+  現状へ更新するか過去スナップショットとして日付・commit を明記。
+  根拠 `investigation/upstream-fix-proposals.md:140-142` / RV-R5-DC01 / confirmed。
+- [ ] `dsh-child-env-scrub` — PATH のみ固定し `NODE_OPTIONS` / `NODE_PATH` 等が
+  dsh 子プロセスへ継承される。`env_clear()` + 必要最小限の明示設定と
+  argv 経由の秘密露出（--api-key）の扱いを整理。
+  根拠 `src/bin/acp_probe.rs:69-79,127-137,283-285`,
+  `src/bin/cordis_composition_ui.rs:215-218,286-306` / RV-R3-AU01, RV-R3-DE01 / likely。
+- [x] `acp-producer-window-shutdown` — `acp_stream_ui` の window close が
+  `StreamSignal::complete()` のみで ACP プロデューサ／dsh 子の終了条件に接続されない。
+  CancellationToken を `spawn_acp` へ渡し connect/prompt を中断＋kill/wait する
+  共通経路とテストを追加。根拠 `src/bin/acp_stream_ui.rs:449-463,571-575,480-494` /
+  RV-R2-BV01, DS-R3-TQ01 / likely。
+  検証（2026-11-28 親）: `cancelled_done_ends_turn_before_acp_work` と
+  `cancellation_interrupts_a_pending_connect` が pass（後者は in-flight を主張せず
+  pending connect に対する cancel へ責任範囲を限定）。R4 指摘の producer 未 join は
+  R5 で JoinHandle を返し main が `done.cancel()` 後に join する形へ修正。
+
+### 優先度: 低（swarm-unlimited 2026-11-28 review+discovery で追加）
+
+- [x] `readme-title-glyph` — `README.md:132` の `x` は実描画の `×`
+  (`src/bin/cordis_todo_ui.rs:116`) と不一致。成功判定文字列を実描画へ合わせる。
+  根拠 `README.md:132` / RV-R2-DF01 / confirmed。
+  検証（2026-11-28 親）: `grep -nF 'cordis-rs × GPUI — tool-todo' README.md
+  src/bin/cordis_todo_ui.rs` が一致（README:133 / ソース:116）。
+- [ ] `probe-child-reap` — kill のみで `wait()` が無く zombie が残る経路を
+  `shutdown_child` と同じ reap 契約へ統一。根拠 `src/bin/acp_prompt_probe.rs:339`,
+  `src/bin/acp_llm_probe.rs:566`, `src/bin/acp_stream_probe.rs:358` /
+  DS-R3-TQ01 / confirmed。
 
 ### 優先度: 高（swarm コンボ 2026-11-23 round 283 で追加）
 
@@ -205,3 +339,5 @@ verified:
 - DSH r5 自己監査 AUDIT-05: `ux-pool-triage` は未実施。UX43件のうち主要7件のみ登録済みで、B-29 deep-link / B-31 background-startup / B-5 session-folders は完全消滅。B-9 仮想化・B-26 トレイは結論のみでタスク化されていない。triage 時に「却下/後回し」を明示記録すること。
 - DSH r5 検出の新規 P0: `fs-read-errors-abort-before-window`（存在しないパスで Window が開かずエラー非表示、再現容易）、`state-json-corruption-and-silent-save-failure`（破損 JSON で選択が初期化、保存失敗が黙って捨てられ再起動で revert）、`detached-poll-keeps-strong-entity-alive`（strong Entity + detached task + 終了条件なし、`investigation/round-5.md` E-1/E5B-08）。
 - 要相談（エージェント判断しない事項）: 案C継続 vs 案B（gpui-pre + gpui-component）移行、モデル残高補填 or モック検証、`dsh` 本体の ACP 対応方針、配布時 Apache-2.0 NOTICE、gpui 0.3 再判断タイミング。詳細は `investigation/final.md`「ユーザーへの意思決定事項」。
+- 2026-11-28 swarm-unlimited R6（review+discovery 32 エージェント、失敗0）で判断待ちとしてメモ化した候補（TODO 化せず）: `agent-client-protocol` 5.3.0 / `tokio` 1.54.1 更新可否（README の xattr 衝突リスクと `cargo audit` 再評価を伴う）、`fixtures/text-turn.cordis.yml` の `!!js` 式を host 側で評価するか静的値へ書換えるか、DSH 実 `protocolVersion` と approval/request の実 JSON-RPC キャプチャ、背圧／リングバッファ導入とバースト観測、グラフェーム単位 Backspace の Wayland 実機実験、不正 UTF-8 CLI 引数（`args_os` 化）、window `app_id` 明示設定、dsh ハング時の bounded wait、`scripts/smoke-gui.sh` 実実行と証跡取得、Fiber `strong_count` / `register_fiber` 登録残り、`investigation/ux-pool-triage.md` の次フェーズ候補（B-31 / B-39 / B-41 等）。いずれも実実行・仕様変更・優先度判断を伴うためユーザー承認待ち。
+- 2026-11-28 のローカル確認: `betterleaks git` は hit zero（exit 0）。ただしリポジトリに `.pre-commit-config.yaml` は存在せず、CI は `audit: false`（`.github/workflows/ci.yml:26`）。pre-commit 主軸のシークレットゲート追加は設定変更を伴うためユーザー承認待ち。

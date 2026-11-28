@@ -63,7 +63,7 @@ cargo build --release
 
 `Cargo.toml` の直接依存のうち、依存衝突を避けるため厳密に固定しているのは
 `gpui = "=0.2.2"`, `tokio = "=1.48.0"`, `tokio-util = "=0.7.16"` と
-`agent-client-protocol = "0.11.1"` です。`cordis-rs` は Git tag で固定し、
+`agent-client-protocol = "=0.11.1"` です。`cordis-rs` は Git tag で固定し、
 現行は `v0.426.0` です。
 
 `libc = 0.2.177` と `mio = 1.1.0` は直接依存として宣言していません。
@@ -121,22 +121,26 @@ echo '=== 証跡の確認（エージェントが read_image を呼ぶ） ==='
 
 `smoke-gui.sh` は外部依存のないデモのみを対象にする。以下は個別に起動する。
 
+- `cordis_composition_ui`: `DEEPSEEK_API_KEY` または `--api-key` が必要。
 - `cordis_entries_toggle_ui`: `DEEPSEEK_API_KEY` または `--api-key` が必要。
 - `acp_stream_ui`: 絶対パスの `dsh` バイナリ（`DSH_BIN`）が必要。
 
 これらをスクリプトに含めると、認証や `dsh` が無い環境で `set -e` により
-途中停止するため、手動起動に委ねる。
+途中停止するため、手動起動に委ねる（`smoke-gui.sh` 側の対象除外と整合）。
 
 `read_image` で次を確認する（例: `cordis_todo_ui`）:
 
-- タイトル `cordis-rs x GPUI — tool-todo`
+- タイトル `cordis-rs × GPUI — tool-todo`
 - 本文 `No todos yet. Use the buttons below to call todo_write.`
 - ボタン `+ prepare step` / `start` / `finish` / `clear`
 - 下部ステータス `Ready`
 
 ログの有無やプロセス生存は失敗時の診断材料にとどめ、
 **成功判定には使わない**。描画が無い・期待文字列が無い場合は FAIL とする。
-ボタン押下後の更新まで確認する場合は、ウィンドウを起動したまま
+
+`smoke-gui.sh` は「起動 → 1 回撮影 → 即終了」のみを行い、ボタン操作などの
+対話操作はスクリプトの対象外です。ボタン押下後の更新まで確認する場合は、
+`./target/debug/cordis_todo_ui` を手動で起動したまま
 `+ prepare step` → `start` → `finish` を操作し、再度 `spectacle` で撮影して
 `read_image` で差分を確認する。
 
@@ -162,8 +166,17 @@ echo '=== 証跡の確認（エージェントが read_image を呼ぶ） ==='
 
 `acp_llm_probe` で `dsh --profile acp` を `from_async_text` provider 経由で
 agent-loop に接続できることを確認しました。ACP の initialize / session/new /
-session/prompt は成功し、agent-loop まで到達しています。モデル側の
+session/prompt は成功し、agent-loop まで到達しています。当時はモデル側の
 `Insufficient Balance` により回答本文は取得できませんでした（接続問題ではない）。
+
+その後 2026-11-18 に、NVIDIA の無料モデル
+`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` で本文取得を実証しました。
+`fixtures/acp-nvidia-free.patch.yml` を `DSH_ACP_PATCH` 経由で
+`dsh --profile acp` の `--patch` overlay として渡し、`acp_llm_probe` で
+`acp body: 2`（非空）、`acp_prompt_probe` で `stop_reason = EndTurn` を
+確認しています（詳細は `investigation/stage-b-nvidia-result.md`）。
+DeepSeek 側の残高不足は当時の事実として残りますが、現在は NVIDIA 無料モデル
+による本文取得が可能な状態です。未確認の項目は下記「未実装 / 未確認」を参照。
 
 ## ACP マルチターン（2026-11-17）
 
@@ -176,7 +189,7 @@ session/prompt は成功し、agent-loop まで到達しています。モデル
 
 `cordis_composition_ui` で `fixtures/text-turn.cordis.yml` を読み込み、
 port が存在するエントリのみを fiber として起動し、failed / skipped を一覧表示します。
-cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `v0.377.0`）。
+cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `v0.426.0`）。
 
 ## 未実装 / 未確認
 
@@ -191,8 +204,15 @@ cordis-rs 依存は `Cargo.toml` の Git tag で同期済みです（現行は `
 - `cordis_prompt_ui` はキーボード入力と送信表示のみで AgentLoop は
   実行しません。AgentLoop の実行は `cordis_prompt_agent_ui` を使います。
 - Markdown 描画、テーマ切替、locale / i18n は未実装です（対応コードなし）。
-- 実 LLM の応答本文は未確認です（モデル側の残高不足）。ACP の
-  `initialize` / `session/new` / `session/prompt` までは到達済みです。
+- 実 LLM の応答本文は取得を実証済みです。2026-11-18 に NVIDIA の無料モデル
+  `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` を `DSH_ACP_PATCH` と
+  `fixtures/acp-nvidia-free.patch.yml` で `dsh --profile acp` に overlay し、
+  `acp body: 2`（非空）/ `stop_reason = EndTurn` を確認しました
+  （詳細は `investigation/stage-b-nvidia-result.md`）。当時の DeepSeek の
+  残高不足は事実として残り、ACP の `initialize` / `session/new` /
+  `session/prompt` までは到達済みです。未確認として残るのは、DeepSeek 側の
+  本文取得（残高 0 USD）、他モデル（例: `nvidia/cosmos-reason2-8b`）の
+  互換性、GitHub Actions 上の CI 実行です。
 
 ## ライセンス
 
