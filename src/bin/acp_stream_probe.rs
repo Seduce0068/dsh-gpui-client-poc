@@ -138,6 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
+    scrub_child_env(&mut cmd);
     cmd.args(["--profile", "acp"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

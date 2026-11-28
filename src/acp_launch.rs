@@ -445,3 +445,51 @@ pub(crate) fn resolve_prompt_with_default(
         .and_then(sanitize_prompt)
         .unwrap_or_else(|| default.to_owned())
 }
+
+// ---- Child environment hardening -----------------------------------------
+
+/// Remove Node-specific injection vectors from the `dsh` child environment.
+///
+/// `dsh` is launched through a `#!/usr/bin/env node` shim, so a poisoned
+/// `NODE_OPTIONS` / `NODE_PATH` in the ambient environment can execute code
+/// before any PATH hardening takes effect. Provider credentials remain in the
+/// environment — clearing it wholesale would break real model calls.
+pub(crate) fn scrub_child_env(cmd: &mut tokio::process::Command) {
+    cmd.env_remove("NODE_OPTIONS");
+    cmd.env_remove("NODE_PATH");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrub_child_env;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn scrub_child_env_drops_node_injection_but_keeps_credentials() {
+        let mut cmd = tokio::process::Command::new("dsh");
+        cmd.env("NODE_OPTIONS", "--require /tmp/payload.js")
+            .env("NODE_PATH", "/tmp/modules")
+            .env("DEEPSEEK_API_KEY", "placeholder-not-a-real-key");
+        scrub_child_env(&mut cmd);
+        // `env_remove` records the key with a `None` value; assert that exact
+        // state, because a missing entry would inherit the parent's value at
+        // spawn time (the regression this helper exists to prevent).
+        let value = |name: &str| {
+            cmd.as_std()
+                .get_envs()
+                .find(|(key, _)| key.to_str() == Some(name))
+                .and_then(|(_, value)| value)
+        };
+        let removed = |name: &str| {
+            cmd.as_std()
+                .get_envs()
+                .any(|(key, value)| key.to_str() == Some(name) && value.is_none())
+        };
+        assert!(removed("NODE_OPTIONS"));
+        assert!(removed("NODE_PATH"));
+        assert_eq!(
+            value("DEEPSEEK_API_KEY"),
+            Some(OsStr::new("placeholder-not-a-real-key"))
+        );
+    }
+}

@@ -274,6 +274,7 @@ async fn acp_prompt(prompt: String) -> std::result::Result<String, String> {
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
+    scrub_child_env(&mut cmd);
     let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))?;
     cmd.args(dsh_cli_args(patch.as_deref()))
         .stdin(std::process::Stdio::piped())

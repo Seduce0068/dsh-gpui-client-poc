@@ -472,6 +472,7 @@ fn spawn_acp(
             };
             let mut cmd = tokio::process::Command::new(&dsh_path);
             cmd.env("PATH", child_path);
+            scrub_child_env(&mut cmd);
             cmd.args(["--profile", "acp"])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())

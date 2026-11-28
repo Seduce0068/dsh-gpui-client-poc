@@ -102,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (dsh_path, child_path) = dsh_command_parts()?;
     let mut cmd = tokio::process::Command::new(&dsh_path);
     cmd.env("PATH", child_path);
+    scrub_child_env(&mut cmd);
     // Optional stage-B overlay (e.g. the NVIDIA free-model patch) is injected
     // without touching the user's global profile. No secret is passed here.
     let patch = resolve_patch_path(std::env::var_os("DSH_ACP_PATCH"))?;

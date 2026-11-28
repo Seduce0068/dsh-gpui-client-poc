@@ -144,11 +144,18 @@ verified:
   上流取り込み未完了）を先出しし、旧記述は過去スナップショットとして保持。
   `markdownlint investigation/upstream-fix-proposals.md` exit 0、親が
   `cordis_agent_ui.rs:93,102-120,126` を実読して一致を確認。
-- [ ] `dsh-child-env-scrub` — PATH のみ固定し `NODE_OPTIONS` / `NODE_PATH` 等が
+- [x] `dsh-child-env-scrub` — PATH のみ固定し `NODE_OPTIONS` / `NODE_PATH` 等が
   dsh 子プロセスへ継承される。`env_clear()` + 必要最小限の明示設定と
   argv 経由の秘密露出（--api-key）の扱いを整理。
   根拠 `src/bin/acp_probe.rs:69-79,127-137,283-285`,
   `src/bin/cordis_composition_ui.rs:215-218,286-306` / RV-R3-AU01, RV-R3-DE01 / likely。
+  裁定（2026-11-28 親）: `env_clear()` はプロバイダ認証情報を失うため不採用。
+  共有 `scrub_child_env` が `NODE_OPTIONS` / `NODE_PATH` のみ `env_remove` し、
+  6 バイナリの dsh spawn 直後に適用。認証情報を含む他変数は維持。R4 指摘
+  （テストが None エントリとキー欠落を区別していない）を反映し、
+  キーが値 None で存在することを明示検証。fmt / check / clippy -D warnings /
+  `cargo test --bins`（255 passed, 0 failed）exit 0。
+  残課題: argv の `--api-key` 露出は既存 CLI 契約のため変更せず（要判断）。
 - [x] `acp-producer-window-shutdown` — `acp_stream_ui` の window close が
   `StreamSignal::complete()` のみで ACP プロデューサ／dsh 子の終了条件に接続されない。
   CancellationToken を `spawn_acp` へ渡し connect/prompt を中断＋kill/wait する
