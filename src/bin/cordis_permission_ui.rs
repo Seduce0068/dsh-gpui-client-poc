@@ -16,6 +16,7 @@
 //! fix only; cordis-rs is used as-is.
 
 use std::env;
+use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 
 use cordis_rs::Context;
@@ -48,19 +49,50 @@ impl AnswerMode {
         }
     }
 
-    /// Unset keeps the historical always-Allow behaviour; a malformed value
-    /// is a config typo and fails closed to Ask (swarm review round 283).
+    /// Read the raw OS value so a non-UTF-8 byte sequence is never mistaken
+    /// for "unset". Only a genuinely absent variable keeps the historical
+    /// always-Allow behaviour (swarm review round 283, R2-CODE-PERM).
     fn from_env() -> Self {
-        Self::from_env_result(env::var(ANSWER_ENV), ANSWER_ENV)
+        Self::from_env_from_raw(env::var_os(ANSWER_ENV), ANSWER_ENV)
     }
 
+    /// Pure entry point for a raw OS value. Keep the `Option<OsString>` →
+    /// `VarError::NotUnicode` conversion here so the whole production path is
+    /// testable from the value side without touching the process environment
+    /// (R5 review, R2-CODE-PERM).
+    fn from_env_from_raw(value: Option<OsString>, name: &str) -> Self {
+        let raw = match value {
+            None => Err(env::VarError::NotPresent),
+            Some(value) => value.into_string().map_err(env::VarError::NotUnicode),
+        };
+        Self::from_env_result(raw, name)
+    }
+
+    /// Pure boundary helper: every decision is derived from `value` alone.
+    /// `None` (unset) keeps Allow; any present value that does not parse —
+    /// including non-UTF-8 bytes after `to_string_lossy` — warns on stderr
+    /// and fails closed to Ask.
+    fn from_env_os(value: Option<OsString>, name: &str) -> Self {
+        match value {
+            None => Self::Allow,
+            Some(value) => {
+                let raw = value.to_string_lossy();
+                Self::parse(&raw).unwrap_or_else(|| {
+                    eprintln!("invalid {name}={raw:?}; falling back to ask");
+                    Self::Ask
+                })
+            }
+        }
+    }
+
+    /// Adapter for the old `env::var` shaped result, retained so existing
+    /// callers keep working. `NotUnicode` now takes the fail-closed path
+    /// instead of the old blanket `Err(_) => Allow`.
     fn from_env_result(raw: std::result::Result<String, env::VarError>, name: &str) -> Self {
         match raw {
-            Err(_) => Self::Allow,
-            Ok(raw) => Self::parse(&raw).unwrap_or_else(|| {
-                eprintln!("invalid {name}={raw:?}; falling back to ask");
-                Self::Ask
-            }),
+            Ok(value) => Self::from_env_os(Some(OsString::from(value)), name),
+            Err(env::VarError::NotPresent) => Self::from_env_os(None, name),
+            Err(env::VarError::NotUnicode(value)) => Self::from_env_os(Some(value), name),
         }
     }
 
@@ -347,10 +379,38 @@ mod tests {
         ApprovalRequest::new("tool:bash", "Execute tool bash with the supplied arguments")
     }
 
+    /// A present but non-UTF-8 OS value: the exact case `env::var` reports as
+    /// `VarError::NotUnicode` and the old blanket `Err(_) => Allow` swallowed.
+    #[cfg(unix)]
+    fn non_utf8_answer() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(b"alow\xff".to_vec())
+    }
+
+    #[cfg(windows)]
+    fn non_utf8_answer() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[
+            u16::from(b'a'),
+            u16::from(b'l'),
+            u16::from(b'o'),
+            u16::from(b'w'),
+            0xD800,
+        ])
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn non_utf8_answer() -> OsString {
+        // No portable non-UTF-8 constructor here; a typo still exercises the
+        // fail-closed assertion on other targets.
+        OsString::from("alow")
+    }
+
     #[test]
     fn malformed_answer_env_fails_closed_to_ask() {
         use std::env::VarError;
 
+        // (a) Unset keeps the historical Allow contract.
         assert_eq!(
             AnswerMode::from_env_result(Err(VarError::NotPresent), ANSWER_ENV),
             AnswerMode::Allow
@@ -364,6 +424,11 @@ mod tests {
             AnswerMode::Deny
         );
         assert_eq!(
+            AnswerMode::from_env_result(Ok("ask".to_string()), ANSWER_ENV),
+            AnswerMode::Ask
+        );
+        // (b) Typo and empty value keep the pre-existing fail-closed contract.
+        assert_eq!(
             AnswerMode::from_env_result(Ok("alow".to_string()), ANSWER_ENV),
             AnswerMode::Ask
         );
@@ -371,6 +436,36 @@ mod tests {
             AnswerMode::from_env_result(Ok("".to_string()), ANSWER_ENV),
             AnswerMode::Ask
         );
+        // Non-UTF-8 bytes were swallowed by `Err(_) => Allow`; now fail closed.
+        assert_eq!(
+            AnswerMode::from_env_result(Err(VarError::NotUnicode(non_utf8_answer())), ANSWER_ENV),
+            AnswerMode::Ask
+        );
+    }
+
+    #[test]
+    fn env_value_boundaries_are_decided_by_the_pure_helper() {
+        // Same entry point as `from_env`, driven from the value side so the
+        // `into_string` -> `NotUnicode` conversion is covered by the test.
+        // Unset is the only absence-driven Allow case.
+        assert_eq!(
+            AnswerMode::from_env_from_raw(None, ANSWER_ENV),
+            AnswerMode::Allow
+        );
+        for (value, expected) in [
+            (OsString::from("allow"), AnswerMode::Allow),
+            (OsString::from("deny"), AnswerMode::Deny),
+            (OsString::from("ask"), AnswerMode::Ask),
+            (OsString::from("alow"), AnswerMode::Ask),
+            (OsString::from(""), AnswerMode::Ask),
+            (non_utf8_answer(), AnswerMode::Ask),
+        ] {
+            assert_eq!(
+                AnswerMode::from_env_from_raw(Some(value.clone()), ANSWER_ENV),
+                expected,
+                "value {value:?}"
+            );
+        }
     }
 
     #[test]
