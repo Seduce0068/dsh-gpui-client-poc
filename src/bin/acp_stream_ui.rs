@@ -26,7 +26,7 @@ use agent_client_protocol::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion, SessionId,
     SessionNotification, SessionUpdate, TextContent,
 };
-use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
+use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
 use gpui::{
     App, Application, Context as GpuiContext, Render, SharedString, Window, div, prelude::*, rgb,
 };
@@ -112,6 +112,188 @@ fn dsh_command_parts() -> Result<(PathBuf, OsString), String> {
     let dsh_path = resolve_dsh_from(dsh_bin.as_deref(), &cwd, &trusted_dsh_dirs(home.as_deref()))?;
     let child_path = minimal_child_path(&dsh_path)?;
     Ok((dsh_path, child_path))
+}
+
+// ---- dsh stderr capture: redaction + correlation -------------------------
+//
+// The child's stderr is piped and drained line by line instead of being
+// inherited. Every line is masked by `redact_secrets` and rendered with a
+// `[dsh pid=… session=…]` correlation id before it reaches the log, so
+// provider credentials printed by `dsh` never leak. This mirrors
+// `acp_prompt_probe.rs`; the offline tests exercise both the redaction policy
+// and the drain without spawning `dsh`.
+
+/// Characters that can wrap a key or a value in a URL / JSON / shell log line.
+const REDACTION_WRAPPERS: &[char] = &['"', '\'', '`', '(', ')', '[', ']', '{', '}', ',', '\\'];
+
+/// Reduce the left-hand side of a `key=value` / `key:value` token to a bare
+/// key. Wrappers are stripped from both ends first, then the last URL/JSON
+/// separator is dropped, so `?token`, `"api_key"`, `{"api_key"` and
+/// `['access_token']` all match the same key list. Kept pure so URL / JSON /
+/// quoted boundaries are regression-testable without a subprocess.
+fn redaction_key(raw: &str) -> &str {
+    let unwrapped = raw.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+    unwrapped
+        .rfind(['?', '&', '(', '[', '{'])
+        .map_or(unwrapped, |index| &unwrapped[index + 1..])
+}
+
+/// Mask credential-like values in a subprocess log line.
+///
+/// Pure function: the redaction policy is testable without spawning `dsh` or
+/// reading any secret from the ambient environment.
+fn redact_secrets(line: &str) -> String {
+    const SECRET_KEYS: &[&str] = &[
+        "api_key",
+        "api-key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+        "credential",
+    ];
+    let mut out = String::with_capacity(line.len());
+    let mut tokens = line.split_whitespace().peekable();
+    while let Some(token) = tokens.next() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let lower = token.to_ascii_lowercase();
+        // `Bearer <token>` / `Authorization: Bearer <token>`.
+        if lower == "bearer" && tokens.peek().is_some() {
+            let _ = tokens.next();
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        let mut masked = false;
+        for sep in ['=', ':'] {
+            if let Some((key, _value)) = token.split_once(sep) {
+                let key = redaction_key(key);
+                if SECRET_KEYS
+                    .iter()
+                    .any(|candidate| key.eq_ignore_ascii_case(candidate))
+                {
+                    out.push_str(key);
+                    out.push(sep);
+                    out.push_str("[REDACTED]");
+                    masked = true;
+                    break;
+                }
+            }
+        }
+        if masked {
+            continue;
+        }
+        // Bare provider keys and AWS access key ids; wrappers around a value
+        // must not hide it (`"sk-…"`, `['sk-…']`).
+        let bare = lower.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+        if bare.starts_with("sk-") || bare.starts_with("ghp_") || bare.starts_with("gho_") {
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        // `bare` comes from the lowercased token, so compare in lowercase.
+        if bare.len() == 20 && bare.starts_with("akia") {
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        out.push_str(token);
+    }
+    out
+}
+
+/// Correlation context shared by the stderr drain and the ACP handshake.
+///
+/// `Clone` shares the same state: the handshake publishes the session id while
+/// the stderr drain keeps appending lines.
+#[derive(Clone)]
+struct DshCorrelation {
+    pid: u32,
+    session_id: Arc<Mutex<Option<String>>>,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
+    enabled: bool,
+}
+
+impl DshCorrelation {
+    fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            session_id: Arc::new(Mutex::new(None)),
+            stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            enabled: true,
+        }
+    }
+
+    /// Offline sink used by the transport tests; it never prints.
+    #[cfg(test)]
+    fn offline() -> Self {
+        Self {
+            pid: std::process::id(),
+            session_id: Arc::new(Mutex::new(None)),
+            stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            enabled: false,
+        }
+    }
+
+    fn set_session_id(&self, id: impl Into<String>) {
+        *self.session_id.lock().unwrap() = Some(id.into());
+    }
+
+    fn record_stderr_line(&self, line: String) {
+        self.stderr_lines.lock().unwrap().push(line);
+    }
+
+    /// Render captured stderr with the correlation id and secrets masked.
+    /// Kept separate from `flush` so tests can assert the exact text.
+    fn rendered_lines(&self) -> Vec<String> {
+        let session = self
+            .session_id
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
+        let lines = self.stderr_lines.lock().unwrap();
+        lines
+            .iter()
+            .map(|line| {
+                format!(
+                    "[dsh pid={} session={}] {}",
+                    self.pid,
+                    session,
+                    redact_secrets(line)
+                )
+            })
+            .collect()
+    }
+
+    /// Diagnostics stay on stderr, never in the panel's transcript buffer.
+    fn flush(&self) {
+        if !self.enabled {
+            return;
+        }
+        for line in self.rendered_lines() {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// Drain the `dsh` stderr pipe into `correlation` line by line.
+///
+/// Generic over `AsyncRead` so the drain can be regression-tested with an
+/// in-memory duplex stream instead of a real subprocess.
+fn spawn_stderr_capture<R>(stderr: R, correlation: DshCorrelation) -> tokio::task::JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            correlation.record_stderr_line(line);
+        }
+    })
 }
 
 /// Prompt sent to the agent when the user supplies no CLI argument or env var.
@@ -446,7 +628,93 @@ impl StartupErrorKind {
     }
 }
 
-fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: String) {
+/// Run one ACP turn on a transport that is independent of `dsh` itself.
+///
+/// `done` is the very token `StreamSignal::complete()` cancels from
+/// `on_window_closed`. `biased` keeps cancellation ahead of ACP work when both
+/// are ready at once (e.g. the window closed before the turn started), so a
+/// closed window can never leave an in-flight `connect_with`/`prompt` behind.
+async fn run_acp_turn(
+    transport: impl ConnectTo<Client> + 'static,
+    cwd: PathBuf,
+    prompt: String,
+    buffer: &Arc<Mutex<StreamBuffer>>,
+    signal: &StreamSignal,
+    correlation: &DshCorrelation,
+    done: &CancellationToken,
+) -> String {
+    let notified = buffer.clone();
+    let notified_signal = signal.clone();
+    let handshake_correlation = correlation.clone();
+
+    let connect = Client
+        .builder()
+        .name("cordis-acp-stream-ui")
+        .on_receive_notification(
+            move |notification: SessionNotification, _cx| {
+                let notified = notified.clone();
+                let signal = notified_signal.clone();
+                async move {
+                    record_notification(&notified, &notification);
+                    signal.changed();
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(
+            transport,
+            move |connection: ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?;
+                handshake_correlation.set_session_id(session.session_id.to_string());
+                let response = connection
+                    .send_request(PromptRequest::new(
+                        session.session_id,
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task()
+                    .await?;
+                Ok(format!("{:?}", response.stop_reason))
+            },
+        );
+
+    tokio::select! {
+        biased;
+        _ = done.cancelled() => {
+            "cancelled: window closed".to_string()
+        }
+        result = connect => {
+            match result {
+                Ok(reason) => format!("turn finished: {reason}"),
+                Err(error) => format!("turn error: {error}"),
+            }
+        }
+    }
+}
+
+/// Spawn the ACP producer thread.
+///
+/// `done` is the completion token owned by `StreamSignal`; closing the window
+/// cancels it, ending both the repaint pump and this producer's turn. The child
+/// is always killed and reaped after the turn (or its cancellation) and the
+/// stderr drain is joined before its lines are flushed.
+///
+/// The `JoinHandle` is returned so `main` can join the producer after
+/// `Application::run` returns; otherwise the process could exit before
+/// kill + wait finished and leave the dsh child behind.
+fn spawn_acp(
+    buffer: Arc<Mutex<StreamBuffer>>,
+    signal: StreamSignal,
+    prompt: String,
+    done: CancellationToken,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -476,7 +744,8 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: Str
             cmd.env("PATH", child_path);
             cmd.args(["--profile", "acp"])
                 .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped());
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
                 Err(error) => {
@@ -486,62 +755,48 @@ fn spawn_acp(buffer: Arc<Mutex<StreamBuffer>>, signal: StreamSignal, prompt: Str
                     return;
                 }
             };
-            let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-                buffer.lock().expect("stream buffer poisoned").status =
-                    StartupErrorKind::NoStdio.message("");
-                signal.changed();
-                return;
+
+            // Capture stderr before any fallible stdio/ACP work. `child.id()`
+            // is always Some after a successful spawn; the fallback keeps the
+            // correlation total instead of another early-return leak path.
+            let correlation = DshCorrelation::new(child.id().unwrap_or(0));
+            let capture = child
+                .stderr
+                .take()
+                .map(|stderr| spawn_stderr_capture(stderr, correlation.clone()));
+
+            let stdin = child.stdin.take();
+            let stdout = child.stdout.take();
+            let status = match (stdin, stdout) {
+                (Some(stdin), Some(stdout)) => {
+                    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+                    run_acp_turn(
+                        transport,
+                        cwd,
+                        prompt,
+                        &buffer,
+                        &signal,
+                        &correlation,
+                        &done,
+                    )
+                    .await
+                }
+                _ => StartupErrorKind::NoStdio.message(""),
             };
-            let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
-
-            let notified = buffer.clone();
-            let notified_signal = signal.clone();
-            let result = Client
-                .builder()
-                .name("cordis-acp-stream-ui")
-                .on_receive_notification(
-                    move |notification: SessionNotification, _cx| {
-                        let notified = notified.clone();
-                        let signal = notified_signal.clone();
-                        async move {
-                            record_notification(&notified, &notification);
-                            signal.changed();
-                            Ok(())
-                        }
-                    },
-                    agent_client_protocol::on_receive_notification!(),
-                )
-                .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
-                    connection
-                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                        .block_task()
-                        .await?;
-                    let session = connection
-                        .send_request(NewSessionRequest::new(cwd))
-                        .block_task()
-                        .await?;
-                    let response = connection
-                        .send_request(PromptRequest::new(
-                            session.session_id,
-                            vec![ContentBlock::Text(TextContent::new(prompt))],
-                        ))
-                        .block_task()
-                        .await?;
-                    Ok(format!("{:?}", response.stop_reason))
-                })
-                .await;
-
-            {
-                let mut guard = buffer.lock().expect("stream buffer poisoned");
-                guard.status = match result {
-                    Ok(reason) => format!("turn finished: {reason}"),
-                    Err(error) => format!("turn error: {error}"),
-                };
-            }
+            buffer.lock().expect("stream buffer poisoned").status = status;
             signal.changed();
+
+            // Guaranteed teardown on completion, error, and window-close
+            // cancellation alike: kill + reap so no dsh child is left behind,
+            // then join the stderr drain before rendering its lines.
             let _ = child.kill().await;
+            let _ = child.wait().await;
+            if let Some(capture) = capture {
+                let _ = capture.await;
+            }
+            correlation.flush();
         });
-    });
+    })
 }
 
 fn main() {
@@ -554,7 +809,13 @@ fn main() {
         sessions: HashMap::new(),
     }));
     let signal = StreamSignal::default();
-    spawn_acp(buffer.clone(), signal.clone(), prompt);
+    // The producer observes the same completion token as the repaint pump, so
+    // `signal.complete()` from `on_window_closed` also cancels connect_with /
+    // prompt and reaches the child's kill + wait teardown. Keep a local clone
+    // so we can release the producer if `run` ever returns without the hook
+    // firing, which makes the final `join()` deadlock-free.
+    let done = signal.done.clone();
+    let producer = spawn_acp(buffer.clone(), signal.clone(), prompt, done.clone());
 
     Application::new().run(move |cx: &mut App| {
         let panel = cx.new(|_cx| StreamPanel {
@@ -567,7 +828,11 @@ fn main() {
         let pump_signal = signal.clone();
 
         // Window lifecycle owns the completion signal, so closing the window
-        // ends the task instead of leaving an infinite detached task behind.
+        // ends the repaint task instead of leaving an infinite detached task
+        // behind. `complete()` cancels the shared `done` token, which was also
+        // passed to `spawn_acp`: that cancels the ACP producer's in-flight
+        // connect_with / prompt and routes it through kill + wait of the dsh
+        // child, so the producer cannot outlive its window.
         let close_signal = signal.clone();
         cx.on_window_closed(move |_cx: &mut App| {
             close_signal.complete();
@@ -588,6 +853,13 @@ fn main() {
         let _ = cx.open_window(Default::default(), |_window, _cx| panel.clone());
         eprintln!("acp_stream_ui: GPUI window created");
     });
+
+    // `complete()` is idempotent: normally the window-close hook already
+    // cancelled `done`, but cancelling here guarantees a pending turn is
+    // released even if `run` returned by another path. The producer then runs
+    // kill + wait, joins the stderr drain and exits, so joining cannot hang.
+    done.cancel();
+    let _ = producer.join();
 }
 
 impl StreamPanel {
@@ -601,6 +873,7 @@ impl StreamPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
 
     #[test]
     fn startup_error_prefixes_are_stable() {
@@ -1064,5 +1337,175 @@ mod tests {
                 .iter()
                 .all(|part| part != &PathBuf::from("/tmp") && part != &PathBuf::from("."))
         );
+    }
+
+    // ---- dsh stderr capture: redaction + correlation (offline) ------------
+
+    /// The redaction policy masks credentials but keeps ordinary diagnostics.
+    #[test]
+    fn redaction_masks_credentials_but_keeps_ordinary_text() {
+        assert_eq!(redact_secrets("plain message"), "plain message");
+
+        let masked = redact_secrets("api_key=sk-secret-value ordinary");
+        assert!(masked.contains("api_key=[REDACTED]"), "masked: {masked}");
+        assert!(!masked.contains("sk-secret-value"), "masked: {masked}");
+        assert!(masked.contains("ordinary"), "masked: {masked}");
+    }
+
+    /// URL / JSON / quoted boundaries must reduce to the same bare key list.
+    #[test]
+    fn redaction_key_strips_url_json_and_quote_wrappers() {
+        assert_eq!(redaction_key("?token"), "token");
+        assert_eq!(redaction_key("&access_token"), "access_token");
+        assert_eq!(redaction_key("\"api_key\""), "api_key");
+        assert_eq!(redaction_key("{\"api_key\""), "api_key");
+        assert_eq!(redaction_key("['refresh_token'"), "refresh_token");
+        assert_eq!(redaction_key("api_key"), "api_key");
+    }
+
+    /// Credentials wrapped in URL queries, JSON quotes or shell quotes must
+    /// never survive into a diagnostic line.
+    #[test]
+    fn redaction_masks_url_json_and_quoted_values() {
+        let cases = [
+            "https://host/path?api_key=sk-leaked-url",
+            "\"api_key\":\"sk-leaked-json\"",
+            "{'token': 'sk-leaked-quoted'}",
+            "api_key=\"sk-leaked-dq\"",
+            "token='abcd'",
+        ];
+        for case in cases {
+            let masked = redact_secrets(case);
+            assert!(
+                masked.contains("[REDACTED]")
+                    && !masked.contains("sk-leaked")
+                    && !masked.contains("abcd"),
+                "unmasked boundary: {case} -> {masked}"
+            );
+        }
+        // The original `?token=` contract is unchanged.
+        assert_eq!(redact_secrets("?token=abcd"), "token=[REDACTED]");
+    }
+
+    /// The offline sink used by transport tests never prints diagnostics.
+    #[test]
+    fn offline_correlation_never_emits() {
+        let correlation = DshCorrelation::offline();
+        correlation.set_session_id("offline-session");
+        correlation.record_stderr_line("api_key=sk-would-leak".to_string());
+        // `flush` is a no-op for the offline sink; reaching it without a panic
+        // is the whole assertion (stderr output is not capturable here).
+        correlation.flush();
+        let expected = format!(
+            "[dsh pid={} session=offline-session] api_key=[REDACTED]",
+            std::process::id()
+        );
+        assert_eq!(correlation.rendered_lines(), vec![expected]);
+    }
+
+    /// A piped stderr is drained line by line and rendered with the pid and
+    /// the session id published by the handshake, with secrets masked.
+    #[tokio::test]
+    async fn stderr_pipe_is_drained_and_rendered_with_correlation_id() {
+        let correlation = DshCorrelation::new(4242);
+        correlation.set_session_id("offline-session");
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let drain = spawn_stderr_capture(reader, correlation.clone());
+        writer
+            .write_all(b"api_key=sk-secret-value\nordinary line\n")
+            .await
+            .expect("write to in-memory stderr pipe");
+        drop(writer);
+        drain.await.expect("stderr drain task should finish");
+
+        let rendered = correlation.rendered_lines();
+        assert_eq!(rendered.len(), 2, "every stderr line is rendered");
+        assert!(
+            rendered[0].starts_with("[dsh pid=4242 session=offline-session]"),
+            "correlation id must lead the line: {}",
+            rendered[0]
+        );
+        assert!(
+            rendered[0].contains("[REDACTED]") && !rendered[0].contains("sk-secret-value"),
+            "secret must be masked: {}",
+            rendered[0]
+        );
+        assert!(
+            rendered[1].ends_with("ordinary line"),
+            "ordinary text is preserved: {}",
+            rendered[1]
+        );
+    }
+
+    // ---- Window close cancels the ACP producer ----------------------------
+
+    /// An already-cancelled token ends the turn before any ACP work starts.
+    /// This is the window-closed-before-connect case; `biased` guarantees the
+    /// cancel branch wins without polling the pending ACP future.
+    #[tokio::test]
+    async fn cancelled_done_ends_turn_before_acp_work() {
+        use agent_client_protocol::Channel;
+
+        let (client_channel, _agent_channel) = Channel::duplex();
+        let buffer = Arc::new(Mutex::new(StreamBuffer::default()));
+        let signal = StreamSignal::default();
+        let correlation = DshCorrelation::offline();
+        let done = signal.done.clone();
+        signal.complete(); // what on_window_closed does
+
+        let status = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_acp_turn(
+                client_channel,
+                PathBuf::from("/tmp/acp-stream-ui"),
+                "prompt".to_string(),
+                &buffer,
+                &signal,
+                &correlation,
+                &done,
+            ),
+        )
+        .await
+        .expect("cancelled turn must end immediately");
+        assert!(status.contains("cancelled"), "{status}");
+    }
+
+    /// Cancellation interrupts a *pending* connect: no fake agent is attached,
+    /// so this deliberately does NOT observe an `InitializeRequest` receipt and
+    /// must not be read as proof of a post-initialize in-flight turn. Its scope
+    /// is the window-close race where connect_with is still awaiting its first
+    /// response; `cancelled_done_ends_turn_before_acp_work` covers the other
+    /// extreme (cancel before any ACP work starts).
+    #[tokio::test]
+    async fn cancellation_interrupts_a_pending_connect() {
+        use agent_client_protocol::Channel;
+
+        let (client_channel, _agent_channel) = Channel::duplex();
+        let buffer = Arc::new(Mutex::new(StreamBuffer::default()));
+        let signal = StreamSignal::default();
+        let correlation = DshCorrelation::offline();
+        let done = signal.done.clone();
+
+        let cancel_done = done.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_done.cancel();
+        });
+
+        let status = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_acp_turn(
+                client_channel,
+                PathBuf::from("/tmp/acp-stream-ui"),
+                "prompt".to_string(),
+                &buffer,
+                &signal,
+                &correlation,
+                &done,
+            ),
+        )
+        .await
+        .expect("an in-flight turn must end when the window closes");
+        assert!(status.contains("cancelled"), "{status}");
     }
 }

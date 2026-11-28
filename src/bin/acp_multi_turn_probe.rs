@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::{
@@ -152,6 +153,188 @@ fn dsh_command_parts() -> Result<(PathBuf, OsString), String> {
     Ok((dsh_path, child_path))
 }
 
+// ---- dsh stderr capture: redaction + correlation -------------------------
+//
+// The child's stderr is piped and drained line by line instead of being
+// inherited. Every line is masked by `redact_secrets` and rendered with a
+// `[dsh pid=… session=…]` correlation id before it reaches the diagnostics
+// (stderr) stream, so provider credentials printed by `dsh` never leak into
+// the log. This mirrors `acp_prompt_probe.rs`; the offline tests exercise both
+// the redaction policy and the drain without spawning `dsh`.
+
+/// Characters that can wrap a key or a value in a URL / JSON / shell log line.
+const REDACTION_WRAPPERS: &[char] = &['"', '\'', '`', '(', ')', '[', ']', '{', '}', ',', '\\'];
+
+/// Reduce the left-hand side of a `key=value` / `key:value` token to a bare
+/// key. Wrappers are stripped from both ends first, then the last URL/JSON
+/// separator is dropped, so `?token`, `"api_key"`, `{"api_key"` and
+/// `['access_token']` all match the same key list. Kept pure so URL / JSON /
+/// quoted boundaries are regression-testable without a subprocess.
+fn redaction_key(raw: &str) -> &str {
+    let unwrapped = raw.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+    unwrapped
+        .rfind(['?', '&', '(', '[', '{'])
+        .map_or(unwrapped, |index| &unwrapped[index + 1..])
+}
+
+/// Mask credential-like values in a subprocess log line.
+///
+/// Pure function: the redaction policy is testable without spawning `dsh` or
+/// reading any secret from the ambient environment.
+fn redact_secrets(line: &str) -> String {
+    const SECRET_KEYS: &[&str] = &[
+        "api_key",
+        "api-key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+        "credential",
+    ];
+    let mut out = String::with_capacity(line.len());
+    let mut tokens = line.split_whitespace().peekable();
+    while let Some(token) = tokens.next() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let lower = token.to_ascii_lowercase();
+        // `Bearer <token>` / `Authorization: Bearer <token>`.
+        if lower == "bearer" && tokens.peek().is_some() {
+            let _ = tokens.next();
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        let mut masked = false;
+        for sep in ['=', ':'] {
+            if let Some((key, _value)) = token.split_once(sep) {
+                let key = redaction_key(key);
+                if SECRET_KEYS
+                    .iter()
+                    .any(|candidate| key.eq_ignore_ascii_case(candidate))
+                {
+                    out.push_str(key);
+                    out.push(sep);
+                    out.push_str("[REDACTED]");
+                    masked = true;
+                    break;
+                }
+            }
+        }
+        if masked {
+            continue;
+        }
+        // Bare provider keys and AWS access key ids; wrappers around a value
+        // must not hide it (`"sk-…"`, `['sk-…']`).
+        let bare = lower.trim_matches(|c: char| REDACTION_WRAPPERS.contains(&c));
+        if bare.starts_with("sk-") || bare.starts_with("ghp_") || bare.starts_with("gho_") {
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        // `bare` comes from the lowercased token, so compare in lowercase.
+        if bare.len() == 20 && bare.starts_with("akia") {
+            out.push_str("[REDACTED]");
+            continue;
+        }
+        out.push_str(token);
+    }
+    out
+}
+
+/// Correlation context shared by the stderr drain and the ACP handshake.
+///
+/// `Clone` shares the same state: the handshake publishes the session id while
+/// the stderr drain keeps appending lines.
+#[derive(Clone)]
+struct DshCorrelation {
+    pid: u32,
+    session_id: Arc<Mutex<Option<String>>>,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
+    enabled: bool,
+}
+
+impl DshCorrelation {
+    fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            session_id: Arc::new(Mutex::new(None)),
+            stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            enabled: true,
+        }
+    }
+
+    /// Offline sink used by the transport tests; it never prints.
+    #[cfg(test)]
+    fn offline() -> Self {
+        Self {
+            pid: std::process::id(),
+            session_id: Arc::new(Mutex::new(None)),
+            stderr_lines: Arc::new(Mutex::new(Vec::new())),
+            enabled: false,
+        }
+    }
+
+    fn set_session_id(&self, id: impl Into<String>) {
+        *self.session_id.lock().unwrap() = Some(id.into());
+    }
+
+    fn record_stderr_line(&self, line: String) {
+        self.stderr_lines.lock().unwrap().push(line);
+    }
+
+    /// Render captured stderr with the correlation id and secrets masked.
+    /// Kept separate from `flush` so tests can assert the exact text.
+    fn rendered_lines(&self) -> Vec<String> {
+        let session = self
+            .session_id
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
+        let lines = self.stderr_lines.lock().unwrap();
+        lines
+            .iter()
+            .map(|line| {
+                format!(
+                    "[dsh pid={} session={}] {}",
+                    self.pid,
+                    session,
+                    redact_secrets(line)
+                )
+            })
+            .collect()
+    }
+
+    /// Diagnostics go to stderr through the single `emit` routing point.
+    fn flush(&self) {
+        if !self.enabled {
+            return;
+        }
+        for line in self.rendered_lines() {
+            emit(ProbeStream::Stderr, &line);
+        }
+    }
+}
+
+/// Drain the `dsh` stderr pipe into `correlation` line by line.
+///
+/// Generic over `AsyncRead` so the drain can be regression-tested with an
+/// in-memory duplex stream instead of a real subprocess.
+fn spawn_stderr_capture<R>(stderr: R, correlation: DshCorrelation) -> tokio::task::JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            correlation.record_stderr_line(line);
+        }
+    })
+}
+
 /// How the graceful shutdown of the `dsh --profile acp` subprocess ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShutdownOutcome {
@@ -217,54 +400,82 @@ fn report_shutdown(outcome: ShutdownOutcome) {
     emit(ProbeStream::Stderr, &format!("SHUTDOWN = {outcome:?}"));
 }
 
+/// Send every prompt on one ACP session over an arbitrary transport,
+/// publishing the negotiated session id to `correlation` right after
+/// `session/new` so stderr from any prompt turn carries the same id (same
+/// shape as `acp_prompt_probe::prompt_over_with_correlation`).
+async fn multi_turn_over_with_correlation(
+    cwd: PathBuf,
+    prompts: Vec<String>,
+    transport: impl ConnectTo<Client> + 'static,
+    correlation: DshCorrelation,
+) -> Result<(SessionId, Vec<String>), String> {
+    Client
+        .builder()
+        .name("cordis-acp-multi-turn-probe")
+        .connect_with(
+            transport,
+            move |connection: ConnectionTo<Agent>| async move {
+                connection
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .send_request(NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?;
+                let session_id = session.session_id.clone();
+                correlation.set_session_id(session_id.to_string());
+                emit(ProbeStream::Stdout, &format!("session = {session_id}"));
+
+                let mut stop_reasons = Vec::new();
+                for prompt in prompts {
+                    // The echo is a diagnostic trace, not a safe value: run the
+                    // user-supplied prompt through the same redaction policy as
+                    // the child's stderr before writing it to stdout. The wire
+                    // request still carries the unmodified prompt.
+                    emit(
+                        ProbeStream::Stdout,
+                        &format!("prompt => {}", redact_secrets(&prompt)),
+                    );
+                    // A model-side failure (e.g. Insufficient Balance) still
+                    // proves the prompt reached this session; keep the loop going.
+                    let reason = match connection
+                        .send_request(PromptRequest::new(
+                            session_id.clone(),
+                            vec![ContentBlock::Text(TextContent::new(prompt))],
+                        ))
+                        .block_task()
+                        .await
+                    {
+                        Ok(response) => format!("{:?}", response.stop_reason),
+                        // Error text can embed the prompt or a credential from
+                        // the provider; mask it before it reaches the trace.
+                        Err(error) => format!("error: {}", redact_secrets(&error.to_string())),
+                    };
+                    emit(ProbeStream::Stdout, &format!("  stop_reason = {reason}"));
+                    stop_reasons.push(reason);
+                }
+                // All prompts were sent to the same session id.
+                Ok((session_id, stop_reasons))
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Send every prompt on one ACP session over an arbitrary transport.
 ///
 /// The `dsh` subprocess and the offline `Channel::duplex()` tests share this
-/// path, so session reuse can be checked without a model provider.
+/// path, so session reuse can be checked without a model provider. Test callers
+/// keep this signature unchanged and use an offline correlation sink.
+#[cfg(test)]
 async fn multi_turn_over(
     cwd: PathBuf,
     prompts: Vec<String>,
     transport: impl ConnectTo<Client> + 'static,
 ) -> Result<(SessionId, Vec<String>), String> {
-    Client
-        .builder()
-        .name("cordis-acp-multi-turn-probe")
-        .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
-            connection
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                .block_task()
-                .await?;
-            let session = connection
-                .send_request(NewSessionRequest::new(cwd))
-                .block_task()
-                .await?;
-            let session_id = session.session_id.clone();
-            emit(ProbeStream::Stdout, &format!("session = {session_id}"));
-
-            let mut stop_reasons = Vec::new();
-            for prompt in prompts {
-                emit(ProbeStream::Stdout, &format!("prompt => {prompt}"));
-                // A model-side failure (e.g. Insufficient Balance) still
-                // proves the prompt reached this session; keep the loop going.
-                let reason = match connection
-                    .send_request(PromptRequest::new(
-                        session_id.clone(),
-                        vec![ContentBlock::Text(TextContent::new(prompt))],
-                    ))
-                    .block_task()
-                    .await
-                {
-                    Ok(response) => format!("{:?}", response.stop_reason),
-                    Err(error) => format!("error: {error}"),
-                };
-                emit(ProbeStream::Stdout, &format!("  stop_reason = {reason}"));
-                stop_reasons.push(reason);
-            }
-            // All prompts were sent to the same session id.
-            Ok((session_id, stop_reasons))
-        })
-        .await
-        .map_err(|error| error.to_string())
+    multi_turn_over_with_correlation(cwd, prompts, transport, DshCorrelation::offline()).await
 }
 
 #[tokio::main]
@@ -277,27 +488,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cmd.env("PATH", child_path);
     cmd.args(["--profile", "acp"])
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn()?;
-    let stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
 
-    let (session_id, stop_reasons) = multi_turn_over(
-        cwd,
-        prompts.iter().map(|prompt| (*prompt).to_string()).collect(),
-        transport,
-    )
-    .await?;
+    // Capture stderr before any fallible work starts. `child.id()` is always
+    // Some after a successful spawn; the fallback only keeps the correlation
+    // total instead of leaking the child on an impossible None.
+    let correlation = DshCorrelation::new(child.id().unwrap_or(0));
+    let capture = child
+        .stderr
+        .take()
+        .map(|stderr| spawn_stderr_capture(stderr, correlation.clone()));
 
-    assert_eq!(stop_reasons.len(), 2);
-    report_completed(stop_reasons.len());
-    let _ = session_id;
+    // Everything after spawn lives in one fallible block: an error in stdio
+    // acquisition or in the ACP handshake must still reach the teardown below
+    // instead of returning early with a live child.
+    let result = async {
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
 
-    // All turns are done and the ACP connection has been dropped, so the
-    // agent has seen EOF on stdin. Wait for a clean exit before killing.
+        // The session id is published inside `multi_turn_over_with_correlation`
+        // immediately after `session/new`, so stderr from every prompt turn
+        // carries the same correlation id instead of `session=-`.
+        let (_session_id, stop_reasons) = multi_turn_over_with_correlation(
+            cwd,
+            prompts.iter().map(|prompt| (*prompt).to_string()).collect(),
+            transport,
+            correlation.clone(),
+        )
+        .await?;
+
+        // Return an error instead of panicking: a panic would unwind past the
+        // shutdown_child / kill + wait teardown and leak the dsh child.
+        if stop_reasons.len() != 2 {
+            return Err(Box::<dyn std::error::Error>::from(format!(
+                "expected 2 stop reasons, got {}",
+                stop_reasons.len()
+            )));
+        }
+        report_completed(stop_reasons.len());
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    // All turns are done (or failed) and the ACP connection has been dropped,
+    // so the agent has seen EOF on stdin. Always tear down and reap the child,
+    // then drain and render the captured stderr before surfacing `result`.
     let outcome = shutdown_child(&mut child, Duration::from_secs(5)).await;
     report_shutdown(outcome);
+    if let Some(capture) = capture {
+        let _ = capture.await;
+    }
+    correlation.flush();
+    result?;
     Ok(())
 }
 
@@ -313,10 +558,12 @@ mod tests {
         PromptRequest, PromptResponse, SessionId, StopReason,
     };
     use agent_client_protocol::{Agent, Channel};
+    use tokio::io::AsyncWriteExt;
 
     use super::{
-        ProbeStream, ShutdownOutcome, multi_turn_over, report_completed, report_shutdown,
-        shutdown_child, start_capture, take_capture,
+        DshCorrelation, ProbeStream, ShutdownOutcome, multi_turn_over,
+        multi_turn_over_with_correlation, redact_secrets, redaction_key, report_completed,
+        report_shutdown, shutdown_child, spawn_stderr_capture, start_capture, take_capture,
     };
 
     const SESSION_ID: &str = "offline-multi-turn-session";
@@ -516,6 +763,62 @@ mod tests {
         );
     }
 
+    /// The user-supplied prompt is echoed only after redaction, while the ACP
+    /// request still carries the original text and the `prompt => …` /
+    /// `  stop_reason = …` trace contract is unchanged. The error branch uses
+    /// the same redaction policy before emitting `error: …`.
+    #[tokio::test]
+    async fn prompt_echo_is_redacted_but_request_keeps_original_text() {
+        let observed = Arc::new(Observed::default());
+        let client_channel = spawn_fake_agent(Arc::clone(&observed));
+        let raw_prompt = "api_key=sk-leaked-prompt remember this".to_string();
+
+        start_capture();
+        let (_session_id, stop_reasons) = multi_turn_over(
+            PathBuf::from("/tmp/offline-multi-turn"),
+            vec![raw_prompt.clone()],
+            client_channel,
+        )
+        .await
+        .expect("offline multi-turn run should succeed");
+        let lines = take_capture();
+
+        assert_eq!(stop_reasons, vec!["EndTurn"]);
+        let texts: Vec<_> = lines.iter().map(|(_, text)| text.as_str()).collect();
+        assert!(
+            texts.contains(&"prompt => api_key=[REDACTED] remember this"),
+            "echo must be redacted but keep prefix and ordinary words: {texts:?}"
+        );
+        assert!(
+            texts.iter().all(|text| !text.contains("sk-leaked-prompt")),
+            "raw credential must never reach stdout: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"  stop_reason = EndTurn"),
+            "stop_reason trace contract must be unchanged: {texts:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|(stream, _)| *stream == ProbeStream::Stdout),
+            "trace lines must stay on stdout: {lines:?}"
+        );
+
+        let seen = observed.prompts.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![(SessionId::from(SESSION_ID), raw_prompt)],
+            "the ACP request must carry the unmodified prompt"
+        );
+
+        // Same policy on the error branch of the stop_reason trace.
+        let masked = redact_secrets("error: api_key=sk-leaked-error");
+        assert!(
+            masked.contains("[REDACTED]") && !masked.contains("sk-leaked-error"),
+            "error text must be masked: {masked}"
+        );
+    }
+
     /// 完了サマリは結果（stdout）、shutdown は診断（stderr）。
     #[test]
     fn summary_is_stdout_and_shutdown_is_stderr() {
@@ -664,6 +967,129 @@ mod tests {
             parts
                 .iter()
                 .all(|part| part != &PathBuf::from("/tmp") && part != &PathBuf::from("."))
+        );
+    }
+
+    // ---- dsh stderr capture: redaction + correlation (offline) ------------
+
+    /// The redaction policy masks credentials but keeps ordinary diagnostics.
+    #[test]
+    fn redaction_masks_credentials_but_keeps_ordinary_text() {
+        assert_eq!(redact_secrets("plain message"), "plain message");
+
+        let masked = redact_secrets("api_key=sk-secret-value ordinary");
+        assert!(masked.contains("api_key=[REDACTED]"), "masked: {masked}");
+        assert!(!masked.contains("sk-secret-value"), "masked: {masked}");
+        assert!(masked.contains("ordinary"), "masked: {masked}");
+
+        let masked = redact_secrets("Authorization: Bearer sk-abc123");
+        assert!(!masked.contains("sk-abc123"), "masked: {masked}");
+    }
+
+    /// URL / JSON / quoted boundaries must reduce to the same bare key list.
+    #[test]
+    fn redaction_key_strips_url_json_and_quote_wrappers() {
+        assert_eq!(redaction_key("?token"), "token");
+        assert_eq!(redaction_key("&access_token"), "access_token");
+        assert_eq!(redaction_key("\"api_key\""), "api_key");
+        assert_eq!(redaction_key("{\"api_key\""), "api_key");
+        assert_eq!(redaction_key("['refresh_token'"), "refresh_token");
+        assert_eq!(redaction_key("api_key"), "api_key");
+    }
+
+    /// Credentials wrapped in URL queries, JSON quotes or shell quotes must
+    /// never survive into a diagnostic line.
+    #[test]
+    fn redaction_masks_url_json_and_quoted_values() {
+        let cases = [
+            "https://host/path?api_key=sk-leaked-url",
+            "\"api_key\":\"sk-leaked-json\"",
+            "{'token': 'sk-leaked-quoted'}",
+            "api_key=\"sk-leaked-dq\"",
+            "token='abcd'",
+        ];
+        for case in cases {
+            let masked = redact_secrets(case);
+            assert!(
+                masked.contains("[REDACTED]")
+                    && !masked.contains("sk-leaked")
+                    && !masked.contains("abcd"),
+                "unmasked boundary: {case} -> {masked}"
+            );
+        }
+        // The original `?token=` contract is unchanged.
+        assert_eq!(redact_secrets("?token=abcd"), "token=[REDACTED]");
+    }
+
+    /// The offline sink used by transport tests never emits diagnostics.
+    #[test]
+    fn offline_correlation_never_emits() {
+        let correlation = DshCorrelation::offline();
+        correlation.set_session_id("offline-session");
+        correlation.record_stderr_line("api_key=sk-would-leak".to_string());
+        start_capture();
+        correlation.flush();
+        assert!(
+            take_capture().is_empty(),
+            "offline correlation must not print"
+        );
+    }
+
+    /// The session id must be published as soon as `session/new` answers, not
+    /// after all prompts, so stderr from the first turn is already correlated.
+    #[tokio::test]
+    async fn handshake_publishes_session_id_to_correlation() {
+        let observed = Arc::new(Observed::default());
+        let client_channel = spawn_fake_agent(Arc::clone(&observed));
+        let correlation = DshCorrelation::offline();
+
+        multi_turn_over_with_correlation(
+            PathBuf::from("/tmp/offline-multi-turn"),
+            vec!["first".to_string()],
+            client_channel,
+            correlation.clone(),
+        )
+        .await
+        .expect("offline multi-turn run should succeed");
+
+        assert_eq!(
+            *correlation.session_id.lock().unwrap(),
+            Some(SESSION_ID.to_string()),
+            "the negotiated ACP session id must be correlated"
+        );
+    }
+
+    /// A piped stderr is drained line by line and rendered with the pid and
+    /// the session id published by the handshake, with secrets masked.
+    #[tokio::test]
+    async fn stderr_pipe_is_drained_and_rendered_with_correlation_id() {
+        let correlation = DshCorrelation::new(4242);
+        correlation.set_session_id("offline-session");
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let drain = spawn_stderr_capture(reader, correlation.clone());
+        writer
+            .write_all(b"api_key=sk-secret-value\nordinary line\n")
+            .await
+            .expect("write to in-memory stderr pipe");
+        drop(writer);
+        drain.await.expect("stderr drain task should finish");
+
+        let rendered = correlation.rendered_lines();
+        assert_eq!(rendered.len(), 2, "every stderr line is rendered");
+        assert!(
+            rendered[0].starts_with("[dsh pid=4242 session=offline-session]"),
+            "correlation id must lead the line: {}",
+            rendered[0]
+        );
+        assert!(
+            rendered[0].contains("[REDACTED]") && !rendered[0].contains("sk-secret-value"),
+            "secret must be masked: {}",
+            rendered[0]
+        );
+        assert!(
+            rendered[1].ends_with("ordinary line"),
+            "ordinary text is preserved: {}",
+            rendered[1]
         );
     }
 }
